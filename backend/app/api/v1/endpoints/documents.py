@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_staff
 from app.db.session import get_db
-from app.models.document import DocumentCategory
+from app.models.document import DocumentCategory, DocumentStatus
 from app.models.user import User
 from app.schemas.document import (
     ChecklistItemRead,
@@ -51,16 +51,19 @@ def list_documents(
     client_id: uuid.UUID | None = Query(default=None),
     filing_request_id: uuid.UUID | None = Query(default=None),
     category: DocumentCategory | None = Query(default=None),
+    status_: DocumentStatus | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ):
     """Clients are always scoped to their own documents regardless of the
-    client_id filter passed. Staff may filter by client_id/filing_request_id."""
+    client_id filter passed. Staff may filter by client_id/filing_request_id/status
+    — status is what backs the admin review panel's "awaiting review" queue."""
     items, total = DocumentService(db).list_documents(
         current_user,
         client_id=client_id,
         filing_request_id=filing_request_id,
         category=category,
+        status=status_,
         page=page,
         page_size=page_size,
     )

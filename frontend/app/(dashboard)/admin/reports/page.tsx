@@ -10,6 +10,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import Link from "next/link";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -64,12 +65,14 @@ export default function ReportsPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
-        <StatCard
-          label="Revenue (paid invoices)"
-          value={`₹${data.revenue.toLocaleString("en-IN")}`}
-          icon={IndianRupee}
-          tone="brass"
-        />
+        <Link href="/admin/invoices" className="block transition-opacity hover:opacity-90">
+          <StatCard
+            label="Revenue (paid invoices)"
+            value={`₹${data.revenue.toLocaleString("en-IN")}`}
+            icon={IndianRupee}
+            tone="brass"
+          />
+        </Link>
         <StatCard
           label="Completion rate"
           value={`${Math.round(data.completion_rate * 100)}%`}

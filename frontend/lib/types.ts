@@ -124,6 +124,82 @@ export interface ChecklistItem {
   fulfilling_document_id: string | null;
 }
 
+export interface DocumentItem {
+  id: string;
+  client_id: string;
+  filing_request_id: string | null;
+  category: DocumentCategory;
+  status: DocumentStatus;
+  original_filename: string;
+  mime_type: string;
+  file_size_bytes: number;
+  version: number;
+  replaces_document_id: string | null;
+  uploaded_by_id: string;
+  extracted_fields: Record<string, unknown> | null;
+  extraction_confidence: number | null;
+  reviewer_comment: string | null;
+}
+
+export interface PaginatedDocuments {
+  items: DocumentItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export type InvoiceStatus = "draft" | "sent" | "paid" | "overdue" | "cancelled";
+
+export interface InvoiceLineItem {
+  description: string;
+  quantity: number;
+  unit_amount: number;
+}
+
+export interface Invoice {
+  id: string;
+  firm_id: string;
+  client_id: string;
+  invoice_number: string;
+  status: InvoiceStatus;
+  issue_date: string;
+  due_date: string;
+  paid_at: string | null;
+  line_items: InvoiceLineItem[];
+  subtotal: number;
+  tax_rate: number;
+  tax_amount: number;
+  total_amount: number;
+  notes: string | null;
+  payment_reference: string | null;
+}
+
+export type WhatsAppMessageType = "text" | "image" | "document" | "unknown";
+export type WhatsAppProcessingStatus =
+  | "received"
+  | "unmatched"
+  | "acknowledged"
+  | "document_created"
+  | "error";
+
+export interface WhatsAppInboundMessage {
+  id: string;
+  wa_message_id: string;
+  from_phone: string;
+  message_type: WhatsAppMessageType;
+  processing_status: WhatsAppProcessingStatus;
+  client_id: string | null;
+  created_document_id: string | null;
+  error_detail: string | null;
+}
+
+export interface WhatsAppInboundMessagePage {
+  items: WhatsAppInboundMessage[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface Client {
   id: string;
   user_id: string;

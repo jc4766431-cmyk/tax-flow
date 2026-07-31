@@ -24,6 +24,7 @@ class DocumentRepository:
         client_id: uuid.UUID | None = None,
         filing_request_id: uuid.UUID | None = None,
         category=None,
+        status=None,
         firm_id: uuid.UUID | None = None,
         page: int = 1,
         page_size: int = 20,
@@ -42,6 +43,8 @@ class DocumentRepository:
             stmt = stmt.where(Document.filing_request_id == filing_request_id)
         if category is not None:
             stmt = stmt.where(Document.category == category)
+        if status is not None:
+            stmt = stmt.where(Document.status == status)
 
         total = self.db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
         stmt = stmt.order_by(Document.created_at.desc()).offset((page - 1) * page_size).limit(page_size)

@@ -13,8 +13,15 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user, require_staff
 from app.db.session import get_db
-from app.schemas.whatsapp import WhatsAppInboundMessageRead, WhatsAppWebhookProcessResult
+from app.models.user import User
+from app.models.whatsapp import WhatsAppProcessingStatus
+from app.schemas.whatsapp import (
+    WhatsAppInboundMessagePage,
+    WhatsAppInboundMessageRead,
+    WhatsAppWebhookProcessResult,
+)
 from app.services.whatsapp_service import (
     WhatsAppService,
     WhatsAppSignatureVerificationError,
@@ -25,6 +32,33 @@ from app.services.whatsapp_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks/whatsapp", tags=["whatsapp"])
+
+
+@router.get(
+    "/messages",
+    response_model=WhatsAppInboundMessagePage,
+    dependencies=[Depends(require_staff)],
+)
+def list_whatsapp_messages(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    status_: WhatsAppProcessingStatus | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    """Staff-facing message log — the "WhatsApp" admin panel's only data
+    source. Read-only: this module doesn't do outbound replies yet (no real
+    Meta App/access token exists — see whatsapp_service.py's module
+    docstring), so there's nothing to click besides viewing the log."""
+    items, total = WhatsAppService(db).list_messages(
+        current_user, status_filter=status_, page=page, page_size=page_size
+    )
+    return WhatsAppInboundMessagePage(
+        items=[WhatsAppInboundMessageRead.model_validate(m) for m in items],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("", response_class=PlainTextResponse)

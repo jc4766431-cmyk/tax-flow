@@ -133,6 +133,7 @@ class DocumentService:
         client_id: uuid.UUID | None,
         filing_request_id: uuid.UUID | None,
         category: DocumentCategory | None,
+        status: DocumentStatus | None = None,
         page: int,
         page_size: int,
     ):
@@ -152,6 +153,7 @@ class DocumentService:
             client_id=client_id,
             filing_request_id=filing_request_id,
             category=category,
+            status=status,
             firm_id=firm_id,
             page=page,
             page_size=page_size,

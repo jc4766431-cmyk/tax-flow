@@ -35,3 +35,12 @@ class WhatsAppWebhookProcessResult(BaseModel):
     useful for `verify_webhook_flow.py`-style manual verification."""
 
     processed: list[WhatsAppInboundMessageRead]
+
+
+class WhatsAppInboundMessagePage(BaseModel):
+    """Paginated inbound-message log for the staff admin UI (§3d)."""
+
+    items: list[WhatsAppInboundMessageRead]
+    total: int
+    page: int
+    page_size: int

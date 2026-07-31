@@ -30,7 +30,7 @@ import logging
 import re
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -113,6 +113,37 @@ class WhatsAppService:
     def __init__(self, db: Session):
         self.db = db
         self.sender = WhatsAppBusinessAPISender()
+
+    # --- Staff-facing message log (admin UI) -----------------------------
+
+    def list_messages(
+        self,
+        current_user: User,
+        *,
+        status_filter: WhatsAppProcessingStatus | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[WhatsAppInboundMessage], int]:
+        """Backs the admin "WhatsApp" panel — a read view over the inbound
+        log described in this module's docstring. Firm-scoped through the
+        matched Client (rows with no matched client, i.e. UNMATCHED, are
+        platform-level noise with nothing to scope by, so only SUPER_ADMIN
+        sees those; firm staff see only rows matched to their own firm's
+        clients)."""
+        stmt = select(WhatsAppInboundMessage).order_by(
+            WhatsAppInboundMessage.created_at.desc()
+        )
+        if current_user.role.value != "super_admin":
+            stmt = stmt.join(Client, Client.id == WhatsAppInboundMessage.client_id).where(
+                Client.firm_id == current_user.firm_id
+            )
+        if status_filter is not None:
+            stmt = stmt.where(WhatsAppInboundMessage.processing_status == status_filter)
+
+        total = self.db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+        items = list(self.db.scalars(stmt).all())
+        return items, total
 
     # --- Meta's GET verification handshake ------------------------------
 
