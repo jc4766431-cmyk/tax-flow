@@ -33,7 +33,12 @@ def _run_tesseract(file_bytes: bytes, mime_type: str) -> str:
     if mime_type == "application/pdf":
         from pdf2image import convert_from_bytes
 
-        pages = convert_from_bytes(file_bytes)
+        # Explicit DPI ceiling (not pdf2image's default) — this runs on the
+        # same small free-tier instance that also serves API requests (see
+        # worker/tasks.py's docstring), so keeping per-page memory/CPU
+        # bounded matters more here than OCR accuracy at higher resolution.
+        # 150 is a reasonable ceiling for OCR purposes, not 300+.
+        pages = convert_from_bytes(file_bytes, dpi=settings.OCR_RENDER_DPI)
         return "\n".join(pytesseract.image_to_string(p) for p in pages)
 
     image = Image.open(io.BytesIO(file_bytes))

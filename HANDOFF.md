@@ -2139,3 +2139,175 @@ invoices (only the reports revenue card consumes the new endpoints —
 there's no `/admin/invoices` page yet, that's the next frontend gap for
 this module), and any payment gateway integration (deliberately, per the
 model's own docstring — don't guess a provider).
+
+## UPDATE 26 (deployment-architecture pass — mostly live-verified, see caveats)
+
+Implemented the deployment-architecture prompt's Part 1 in full: removed
+Celery/Redis, moved OCR to `BackgroundTasks`, added the
+`/internal/tasks/heartbeat` endpoint + `system_state` table, switched R2's
+region default, wired Razorpay (Orders API + webhook) into both billing and
+invoicing, replaced SMTP with Resend, added Sentry, deleted `render.yaml`.
+Unlike most updates in this file, this one **was** live-verified against a
+real Postgres instance and a real running `uvicorn` process — not just
+`py_compile` — see the verification list below before assuming the usual
+caveats apply here too.
+
+**1. Celery/Redis removed entirely.** Deleted `app/worker/celery_app.py`.
+`app/worker/tasks.py`'s four functions
+(`dispatch_due_reminders`/`escalate_overdue_document_requests`/
+`expire_subscriptions`/`process_document_ocr`) are now plain functions, no
+`@shared_task` decorator, business logic untouched. `celery`/`redis`
+removed from `requirements.txt`; `REDIS_URL`/`CELERY_BROKER_URL`/
+`CELERY_RESULT_BACKEND` removed from `config.py` and `.env.example`.
+Confirmed `app/core/limiter.py`'s slowapi `Limiter` has no `storage_uri` —
+in-memory only, no hidden Redis dependency, nothing else in the codebase
+referenced Celery/Redis (`grep -rn` came up clean outside these files and
+this file's own history).
+
+**2. `BackgroundTasks` replaces `.delay()`.** `DocumentService.
+register_document` now takes an optional `background_tasks: BackgroundTasks
+| None` and calls `.add_task(process_document_ocr, ...)`. Threaded through
+both real call sites: the browser-upload endpoint
+(`app/api/v1/endpoints/documents.py`) and the WhatsApp inbound-media path
+(`whatsapp_service.py` → `whatsapp.py`'s webhook endpoint now also takes
+`BackgroundTasks`) — media uploaded via WhatsApp gets OCR scheduled too,
+not just browser uploads. `background_tasks=None` is a real, exercised
+path (not dead code): any future caller without a live request in flight
+just skips scheduling OCR rather than erroring.
+
+Two accepted-risk mitigations implemented in `process_document_ocr` /
+`ocr_service.py`: `OCR_MAX_FILE_SIZE_MB` (default 5) skips-and-logs
+oversized documents instead of running OCR inline on the small instance;
+`OCR_RENDER_DPI` (default 150, explicit, not pdf2image's default ~200)
+bounds per-page memory/CPU.
+
+**3. `GET /internal/tasks/heartbeat`** (`app/api/v1/endpoints/internal.py`):
+`X-Internal-Task-Secret` header checked against `INTERNAL_TASK_SECRET`,
+**fails closed** if that setting is unset (no request is ever trusted by
+default — live-verified, see below). New `system_state` key/value table
+(`app/models/system_state.py`, migration `b1d4e6a92f01`, chained onto the
+real current head `f4a9c0e2b7d1`) holds `last_scheduled_run_at` durably.
+55-minute minimum interval between runs. `GET /health` is untouched and
+still exists as a pure liveness check — point UptimeRobot at the new
+heartbeat endpoint instead, not at `/health`, once this is live (see
+`docs/deployment.md` step 7).
+
+**4. Cloudflare R2.** `S3_REGION` default changed `"us-east-1"` →
+`"auto"` in `config.py` and `.env.example`, with comments on
+`S3_ENDPOINT_URL`/API-token-not-IAM-user. `storage_service.py` itself
+needed no changes — confirmed (again) it only calls `put_object`/
+`get_object`/presigned PUT/GET, nothing R2-incompatible.
+
+**5. Razorpay** (`app/services/razorpay_service.py`, new) — looked up
+current Orders API and webhook-signature docs rather than relying on
+training data, per the prompt's instruction. Orders API called directly
+over `httpx` with Basic Auth; webhook verification is HMAC-SHA256 over the
+**raw** body against `X-Razorpay-Signature`, `hmac.compare_digest` for the
+comparison. Deliberately raises (`RazorpayNotConfiguredError`,
+`RazorpayWebhookVerificationError`) rather than no-op'ing when
+unconfigured — unlike the notification senders, a silently-skipped payment
+or an unverified-but-trusted webhook is a correctness/fraud risk, not a
+convenience gap.
+
+Wired into both billing (`billing_service.py`: `create_subscription` now
+creates a real Order and leaves paid-tier subscriptions `TRIALING` until
+a webhook confirms payment; `upgrade_subscription` creates an Order for
+the (simplified, non-day-prorated) cost delta; `cancel_subscription`'s
+old TODO replaced with an explanation of why there's no gateway-side
+subscription object to cancel — this design uses one-off Orders per
+period, not Razorpay's recurring Subscriptions API) and invoicing
+(`invoice_service.py`: new `create_payment_order` method + `POST
+/invoices/{id}/payment-order` endpoint; new `Invoice.razorpay_order_id`
+column, migration `c2e5f7b03a12`, chained onto `b1d4e6a92f01`). Single new
+endpoint `POST /webhooks/razorpay` (`app/api/v1/endpoints/
+razorpay_webhook.py`) verifies the signature, then checks the order id
+against both `Subscription.payment_gateway_ref` and
+`Invoice.razorpay_order_id` (added `get_by_payment_gateway_ref` /
+`get_by_razorpay_order_id` lookups to the respective repositories) since
+one order id space is shared conceptually across both flows.
+
+**Not built**: any frontend Razorpay Checkout widget — this pass is
+backend-only, per the prompt's scope (find `TODO(payment-gateway)`, wire
+against the API). A firm can create a payment order via the API today, but
+there's no `/pay` page yet for a client to actually complete a Checkout
+flow against it. Also not built: true day-based proration on upgrades
+(explicitly simplified — see the inline comment at the call site).
+
+**6. Email — Resend.** `EmailSender` (`notification_channels.py`)
+rewritten to POST to `https://api.resend.com/emails` with Bearer auth
+instead of raw SMTP (smaller diff than generalizing SMTP, and one fewer
+protocol/credential shape, per the "minimize moving pieces" priority).
+Same no-op-when-unconfigured pattern as `WhatsAppBusinessAPISender`.
+`SMTP_HOST`/`SMTP_PORT`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_USE_TLS`
+removed from config; `RESEND_API_KEY` added, `EMAIL_FROM_ADDRESS` kept.
+
+**7. Sentry.** `sentry_sdk.init(dsn=..., environment=...)` in `app/main.py`,
+gated on `SENTRY_DSN`, called **before** `register_exception_handlers(app)`
+so Sentry's auto-instrumentation sees exceptions before the catch-all
+handler converts them to a JSON response. `sentry-sdk[fastapi]==2.66.1`
+added to `requirements.txt`.
+
+**8. `render.yaml` deleted.** New `docs/deployment.md` explaining the
+by-hand-in-dashboard approach and the no-Celery/no-Redis/manual-migrations
+architecture; `README.md`'s quickstart updated to drop the Celery
+worker/beat commands and the Redis prerequisite.
+
+**9. `.env.example` full pass** — rewritten to match every setting
+`config.py` actually reads (nothing dead, nothing missing), with the same
+explanatory comments as the corresponding `config.py` fields.
+
+### Verification actually performed (not just `py_compile`)
+
+This update is the exception to this file's usual "code-only, unverified"
+caveat — the following was run for real, in this environment, this pass:
+
+- Fresh venv, `pip install -r requirements.txt` — resolves cleanly.
+- `python -m py_compile` on every backend `.py` file — clean.
+- Installed real PostgreSQL 16 locally, created a real database, pointed
+  `DATABASE_URL` at it.
+- `python -c "import app.main"` — imports cleanly, Sentry no-op log line
+  fires correctly with `SENTRY_DSN` unset.
+- `alembic upgrade head` — **the full 9-migration chain, including both
+  new migrations, applied cleanly against a real Postgres database**,
+  starting from empty.
+- Booted real `uvicorn`, hit it with real HTTP requests:
+  - `GET /health` → `200 {"status":"ok"}`
+  - `GET /internal/tasks/heartbeat` with no/wrong `X-Internal-Task-Secret`
+    → `401` (fails closed, confirmed)
+  - Same endpoint with the correct secret → ran all three scheduled jobs
+    inline, returned their results; **a second call within the 55-minute
+    window correctly no-op'd** — confirms the durable timestamp gate works
+    across separate requests, not just in-memory
+  - `POST /webhooks/razorpay` with an invalid/missing signature → `200
+    {"status":"rejected"}`, no stack trace or detail leak
+  - `GET /openapi.json` → all 55 routes load, including the three new
+    endpoints, confirming every router/schema is wired correctly
+- Directly exercised `EmailSender.send_text` (no-ops cleanly, unconfigured)
+  and `RazorpayService.create_order` (raises `RazorpayNotConfiguredError`
+  cleanly, unconfigured) as standalone calls.
+- Directly called `dispatch_due_reminders()` / `
+  escalate_overdue_document_requests()` / `expire_subscriptions()` as
+  plain functions (no Celery involved at all) against the real DB — all
+  three ran and returned sane results.
+
+### What's still genuinely unverified — do this before real customer data
+
+- **The §0e/§0f RBAC fix is still not live-verified.** Nothing in this pass
+  touched it or changes that fact — it remains the one non-negotiable
+  verification step, to be done in staging per Part 2 step 9 of the
+  deployment prompt, not skipped because this pass verified other things.
+- No real Razorpay/Resend/Sentry credentials exist yet for this project —
+  every check above confirms the *unconfigured* (no-op / raises-clearly)
+  code paths work correctly, not that a real API call to any of the three
+  services succeeds. That needs real test-mode credentials, which is a
+  Part 2 deployment step, not something to fake here.
+  Test with a real Razorpay test-mode order + a signed webhook payload
+  (Razorpay's dashboard can send a test webhook) before trusting the
+  webhook handler against a real signature, not just a rejected one.
+- No frontend changes at all this pass — if the frontend calls any removed
+  or renamed backend field/endpoint (unlikely, since none were renamed,
+  only added), that hasn't been checked.
+- Neon/R2/Cloudflare Workers/Render — none of these exist yet for this
+  project. Everything above was verified against local Postgres and local
+  `uvicorn`, not the real hosted services this is ultimately headed for.
+

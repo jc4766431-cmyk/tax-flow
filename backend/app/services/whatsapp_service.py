@@ -30,6 +30,7 @@ import logging
 import re
 import uuid
 
+from fastapi import BackgroundTasks
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -202,7 +203,9 @@ class WhatsAppService:
 
     # --- Webhook processing ----------------------------------------------
 
-    def process_webhook_payload(self, payload: dict) -> list[WhatsAppInboundMessage]:
+    def process_webhook_payload(
+        self, payload: dict, background_tasks: BackgroundTasks | None = None
+    ) -> list[WhatsAppInboundMessage]:
         """Parses Meta's Cloud API shape:
         {"entry": [{"changes": [{"value": {"messages": [...]}}]}]}
         Status-callback payloads (delivered/read receipts) and payloads with
@@ -214,10 +217,12 @@ class WhatsAppService:
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 for msg in value.get("messages", []):
-                    results.append(self._process_single_message(msg))
+                    results.append(self._process_single_message(msg, background_tasks))
         return results
 
-    def _process_single_message(self, msg: dict) -> WhatsAppInboundMessage:
+    def _process_single_message(
+        self, msg: dict, background_tasks: BackgroundTasks | None = None
+    ) -> WhatsAppInboundMessage:
         wa_message_id = msg.get("id", "")
 
         existing = self.db.scalar(
@@ -256,7 +261,7 @@ class WhatsAppService:
         record.client_id = client.id
 
         if message_type in _MEDIA_TYPES:
-            self._handle_media_message(record, msg, message_type, client)
+            self._handle_media_message(record, msg, message_type, client, background_tasks)
         elif message_type == WhatsAppMessageType.TEXT:
             self._handle_text_message(record, msg, client)
         else:
@@ -284,6 +289,7 @@ class WhatsAppService:
         msg: dict,
         message_type: WhatsAppMessageType,
         client: Client,
+        background_tasks: BackgroundTasks | None = None,
     ) -> None:
         media_obj = msg.get(message_type.value, {})
         media_id = media_obj.get("id")
@@ -329,7 +335,9 @@ class WhatsAppService:
         # checklist sync, OCR enqueue, and accountant-notification behavior
         # a browser-based client upload gets. "Acting as this client's own
         # user" is exactly what passing `client_user` as `current_user` does.
-        document = DocumentService(self.db).register_document(client_user, document_payload)
+        document = DocumentService(self.db).register_document(
+            client_user, document_payload, background_tasks
+        )
 
         record.created_document_id = document.id
         record.processing_status = WhatsAppProcessingStatus.DOCUMENT_CREATED

@@ -2,6 +2,8 @@
 Application entrypoint. Wires together config, logging, middleware,
 exception handling, and the versioned API router.
 """
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
@@ -17,6 +19,20 @@ from app.core.logging import configure_logging
 import app.models  # noqa: F401
 
 configure_logging()
+
+logger = logging.getLogger(__name__)
+
+# Sentry — no-op if SENTRY_DSN is unset, same "configured/no-op" pattern
+# used throughout notification_channels.py. Initialized before the
+# exception handlers below are registered so Sentry actually sees
+# exceptions that register_exception_handlers would otherwise catch and
+# convert into a JSON response before Sentry's own middleware runs.
+if settings.SENTRY_DSN:
+    import sentry_sdk
+
+    sentry_sdk.init(dsn=settings.SENTRY_DSN, environment=settings.ENVIRONMENT)
+else:
+    logger.info("[sentry:noop] SENTRY_DSN not set — error monitoring disabled.")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

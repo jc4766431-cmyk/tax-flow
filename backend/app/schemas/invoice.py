@@ -53,3 +53,4 @@ class InvoiceRead(BaseModel):
     total_amount: float
     notes: str | None
     payment_reference: str | None
+    razorpay_order_id: str | None

@@ -9,9 +9,11 @@ from app.api.v1.endpoints import (
     documents,
     filings,
     firms,
+    internal,
     invoices,
     messages,
     notifications,
+    razorpay_webhook,
     reports,
     tasks,
     whatsapp,
@@ -19,6 +21,8 @@ from app.api.v1.endpoints import (
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
+api_router.include_router(internal.router)
+api_router.include_router(razorpay_webhook.router)
 api_router.include_router(firms.router)
 api_router.include_router(clients.router)
 api_router.include_router(filings.router)

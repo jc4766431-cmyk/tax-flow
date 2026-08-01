@@ -53,6 +53,18 @@ class SubscriptionRepository:
         )
         return self.db.scalar(stmt)
 
+    def get_by_payment_gateway_ref(self, payment_gateway_ref: str) -> Subscription | None:
+        """Used by razorpay_webhook.py to find which subscription a
+        confirmed payment.captured/order.paid event belongs to — matches
+        against the pending order id create_subscription/upgrade_subscription
+        stored in payment_gateway_ref (see billing_service.py)."""
+        stmt = (
+            select(Subscription)
+            .options(joinedload(Subscription.plan))
+            .where(Subscription.payment_gateway_ref == payment_gateway_ref)
+        )
+        return self.db.scalar(stmt)
+
     def get_active_for_firm(self, firm_id: uuid.UUID) -> Subscription | None:
         """The firm's current subscription: the non-cancelled row with the
         latest current_period_end, so a just-upgraded subscription (a new

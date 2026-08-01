@@ -8,9 +8,13 @@ invoices are edited as a whole (draft) then frozen once sent, so there's no
 need to query/filter individual line items independently. Amounts are
 Numeric(12, 2) INR, matching billing.py's Plan.price_per_seat_inr precision.
 
-No payment gateway is wired up here, same as billing.py's Subscription —
-`mark_paid` is a manual staff action (record a bank transfer/cheque/UPI
-reference), not a webhook-driven state change.
+Razorpay is now wired up for online payment (see app/services/razorpay_service.py
+and app/api/v1/endpoints/razorpay_webhook.py): `razorpay_order_id` holds the
+pending Order id created by InvoiceService.create_payment_order, and a
+confirmed webhook flips status to PAID and fills in payment_reference with
+the Razorpay payment id — the same field `mark_paid` already used for a
+manual bank transfer/cheque/UPI reference. That manual path (mark_paid)
+still exists unchanged for firms collecting payment outside Razorpay.
 """
 import enum
 import uuid
@@ -65,3 +69,7 @@ class Invoice(Base, UUIDMixin, TimestampMixin):
 
     notes: Mapped[str | None] = mapped_column(String(2000))
     payment_reference: Mapped[str | None] = mapped_column(String(255))
+    # Pending Razorpay Order id — set by create_payment_order, cleared/left
+    # as history once razorpay_webhook.py confirms payment (payment_reference
+    # then holds the payment id, not the order id).
+    razorpay_order_id: Mapped[str | None] = mapped_column(String(255))

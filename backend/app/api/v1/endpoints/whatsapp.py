@@ -9,7 +9,7 @@ yet to get one from — see NEXT-PROMPT.md).
 """
 import logging
 
-from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
@@ -83,6 +83,7 @@ def verify_whatsapp_webhook(
 @router.post("", response_model=WhatsAppWebhookProcessResult)
 async def receive_whatsapp_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     x_hub_signature_256: str | None = Header(default=None, alias="X-Hub-Signature-256"),
 ):
@@ -111,7 +112,7 @@ async def receive_whatsapp_webhook(
 
     payload = await request.json()
     try:
-        processed = WhatsAppService(db).process_webhook_payload(payload)
+        processed = WhatsAppService(db).process_webhook_payload(payload, background_tasks)
     except Exception:
         # Still return 200 — see docstring. Log loudly since this means a
         # bug in our own parsing, not an expected per-message failure.

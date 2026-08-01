@@ -11,9 +11,7 @@ WhatsApp module, per NEXT-PROMPT.md's note that a full generalization belongs
 with §2e's Notifications/Automation work later.
 """
 import logging
-import smtplib
 from abc import ABC, abstractmethod
-from email.message import EmailMessage
 
 import httpx
 
@@ -108,41 +106,46 @@ class WhatsAppBusinessAPISender(NotificationChannelSender):
 
 class EmailSender(NotificationChannelSender):
     """
-    SMTP-based implementation of NotificationChannelSender — the first piece
-    of §2e's "generalize to email/SMS" work. Mirrors
-    WhatsAppBusinessAPISender's configured/no-op split: with no SMTP_HOST
-    set, `send_text` just logs what would have been sent instead of raising,
-    so callers (automation.py's reminder dispatch, once built) can send
-    through this channel unconditionally in every environment.
+    Resend-API-based implementation of NotificationChannelSender — the first
+    piece of §2e's "generalize to email/SMS" work. Calls Resend's HTTP API
+    directly over `httpx` (POST https://api.resend.com/emails, Bearer auth),
+    same reasoning as WhatsAppBusinessAPISender/SMSSender not pulling in a
+    provider SDK. Mirrors their configured/no-op split: with no
+    RESEND_API_KEY set, `send_text` just logs what would have been sent
+    instead of raising, so callers (automation.py's reminder dispatch) can
+    send through this channel unconditionally in every environment.
 
     `to` is an email address here rather than a phone number — channel
     callers already branch on delivery channel, so this doesn't change
     the shared interface, just its meaning.
     """
 
+    _API_URL = "https://api.resend.com/emails"
+
     def __init__(self) -> None:
-        self.host = settings.SMTP_HOST
-        self.configured = bool(self.host)
+        self.api_key = settings.RESEND_API_KEY
+        self.configured = bool(self.api_key)
 
     def send_text(self, to: str, body: str) -> None:
         if not self.configured:
             logger.info(f"[email:noop, not configured] would send to {to}: {body!r}")
             return
 
-        msg = EmailMessage()
-        msg["Subject"] = "TaxFlow notification"
-        msg["From"] = settings.EMAIL_FROM_ADDRESS
-        msg["To"] = to
-        msg.set_content(body)
-
+        payload = {
+            "from": settings.EMAIL_FROM_ADDRESS,
+            "to": [to],
+            "subject": "TaxFlow notification",
+            "text": body,
+        }
         try:
-            with smtplib.SMTP(self.host, settings.SMTP_PORT, timeout=10) as smtp:
-                if settings.SMTP_USE_TLS:
-                    smtp.starttls()
-                if settings.SMTP_USERNAME and settings.SMTP_PASSWORD:
-                    smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
-                smtp.send_message(msg)
-        except (smtplib.SMTPException, OSError) as exc:
+            resp = httpx.post(
+                self._API_URL,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
             # Best-effort, same reasoning as WhatsAppBusinessAPISender.send_text:
             # a failed notification shouldn't crash the flow that triggered it.
             logger.error(f"[email:send_text failed] to={to}: {exc}")

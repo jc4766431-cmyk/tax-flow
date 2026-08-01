@@ -78,6 +78,20 @@ def mark_paid(
     return InvoiceService(db).mark_paid(invoice_id, payload, current_user)
 
 
+@router.post("/{invoice_id}/payment-order", response_model=InvoiceRead)
+def create_payment_order(
+    invoice_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Creates a Razorpay Order for this invoice's total_amount (see
+    InvoiceService.create_payment_order) — the returned invoice's
+    razorpay_order_id is what a checkout flow would use to collect payment.
+    Confirmed payment flips status to PAID automatically via
+    app/api/v1/endpoints/razorpay_webhook.py, not this endpoint."""
+    return InvoiceService(db).create_payment_order(invoice_id, current_user)
+
+
 @router.post("/{invoice_id}/cancel", response_model=InvoiceRead)
 def cancel_invoice(
     invoice_id: uuid.UUID,

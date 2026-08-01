@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_staff
@@ -36,12 +36,15 @@ def create_presigned_upload(
 @router.post("", response_model=DocumentRead, status_code=status.HTTP_201_CREATED)
 def register_document(
     payload: DocumentCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Called after a successful S3 upload to create the Document row, enqueue
-    OCR, sync the filing's checklist, and notify the assigned accountant."""
-    return DocumentService(db).register_document(current_user, payload)
+    """Called after a successful S3 upload to create the Document row,
+    schedule OCR (via FastAPI BackgroundTasks — runs after the response is
+    sent, on this same instance; see app/worker/tasks.py), sync the
+    filing's checklist, and notify the assigned accountant."""
+    return DocumentService(db).register_document(current_user, payload, background_tasks)
 
 
 @router.get("", response_model=PaginatedDocuments)

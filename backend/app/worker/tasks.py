@@ -1,17 +1,32 @@
 """
-Background tasks powering the Automation Center:
+Background work powering the Automation Center:
   - scheduled deadline reminders (email/WhatsApp/SMS)
   - missing-document follow-ups and escalation
   - OCR + AI field extraction on newly uploaded documents
 
-These are structured so each concern has a single-responsibility task that
-can be tested, retried, and monitored independently.
+These used to be Celery tasks backed by a Redis broker. Per the deliberate
+"stay on free tiers, minimize moving pieces" decision for this deployment,
+Celery/Redis have been removed entirely: these are now plain importable
+Python functions, invoked two ways:
+  - `dispatch_due_reminders` / `escalate_overdue_document_requests` /
+    `expire_subscriptions`: run synchronously from the
+    `GET /internal/tasks/heartbeat` endpoint (see
+    app/api/v1/endpoints/internal.py), which an external uptime pinger
+    (e.g. UptimeRobot) hits roughly hourly. There is no dedicated worker
+    process/dyno for these — they run inline on the same web instance,
+    inside that one request.
+  - `process_document_ocr`: invoked via FastAPI's `BackgroundTasks` right
+    after the request that registers a new Document (see
+    document_service.py), so OCR runs after the response is sent but still
+    inside the same web process — see that module's docstring for the
+    accepted risk this carries on a small free-tier instance.
 """
+import logging
 from datetime import date, datetime, timezone
 
-from celery import shared_task
 from sqlalchemy import func, select
 
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.client import Client
 from app.models.document import ChecklistItem, DocumentStatus
@@ -23,7 +38,8 @@ from app.services.billing_service import process_subscription_period_rollovers
 from app.services.notification_channels import EmailSender, SMSSender, WhatsAppBusinessAPISender
 from app.services.ocr_service import confidence_for, extract_fields, extract_text
 from app.services.storage_service import storage_service
-from app.worker.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
 
 # After this many follow-ups already sent for a filing, also notify Firm Admins.
 ESCALATION_FOLLOWUP_THRESHOLD = 3
@@ -39,7 +55,6 @@ def _contact_for(channel: ReminderChannel, user: User) -> str | None:
     return user.email if channel == ReminderChannel.EMAIL else user.phone
 
 
-@celery_app.task(name="app.worker.tasks.dispatch_due_reminders")
 def dispatch_due_reminders() -> dict:
     """
     Finds Reminder rows whose (filing due_date - days_before_deadline) is today,
@@ -92,7 +107,6 @@ def dispatch_due_reminders() -> dict:
         db.close()
 
 
-@celery_app.task(name="app.worker.tasks.escalate_overdue_document_requests")
 def escalate_overdue_document_requests() -> dict:
     """
     For each Client with MISSING documents past the requested checklist deadline:
@@ -162,19 +176,35 @@ def escalate_overdue_document_requests() -> dict:
         db.close()
 
 
-@celery_app.task(name="app.worker.tasks.process_document_ocr")
 def process_document_ocr(document_id: str) -> dict:
     """
     Runs OCR (Tesseract, or Google Document AI if configured) against a newly
     uploaded document, classifies its type, extracts structured fields
     (PAN, GSTIN, invoice totals, names, dates), and stores extraction_confidence
     + extracted_fields on the Document row for the review UI to display.
+
+    Runs via FastAPI BackgroundTasks on the same process/instance that also
+    serves API requests (no separate worker — see this module's docstring),
+    so it's a known, accepted risk on a small free-tier instance. To keep
+    that risk bounded: documents above OCR_MAX_FILE_SIZE_MB are skipped
+    (logged, not crashed — see extract_text/ocr_service.py for the lowered
+    render DPI, the other half of this mitigation).
     """
     db = SessionLocal()
     try:
         document = db.get(Document, document_id)
         if document is None:
             return {"document_id": document_id, "status": "not_found"}
+
+        max_bytes = settings.OCR_MAX_FILE_SIZE_MB * 1024 * 1024
+        if document.file_size_bytes and document.file_size_bytes > max_bytes:
+            logger.info(
+                f"[ocr:skipped] document {document_id} is "
+                f"{document.file_size_bytes} bytes, over the "
+                f"{settings.OCR_MAX_FILE_SIZE_MB}MB auto-OCR threshold — "
+                "skipping (not crashing). Can still be reviewed manually."
+            )
+            return {"document_id": document_id, "status": "skipped_too_large"}
 
         file_bytes = storage_service.download_bytes(document.storage_key)
         text = extract_text(file_bytes, document.mime_type)
@@ -189,7 +219,6 @@ def process_document_ocr(document_id: str) -> dict:
         db.close()
 
 
-@celery_app.task(name="app.worker.tasks.expire_subscriptions")
 def expire_subscriptions() -> dict:
     """Cancels subscriptions with cancel_at_period_end set, and marks other
     subscriptions past their current_period_end as PAST_DUE (no gateway to

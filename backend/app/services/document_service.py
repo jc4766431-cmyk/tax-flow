@@ -5,7 +5,7 @@ Kept separate from the API layer so it is independently unit-testable.
 """
 import uuid
 
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import assert_firm_scoped
@@ -71,9 +71,23 @@ class DocumentService:
         upload_url = storage_service.generate_presigned_upload(storage_key, payload.mime_type)
         return PresignedUploadResponse(upload_url=upload_url, storage_key=storage_key)
 
-    def register_document(self, current_user: User, payload: DocumentCreate) -> Document:
+    def register_document(
+        self,
+        current_user: User,
+        payload: DocumentCreate,
+        background_tasks: BackgroundTasks | None = None,
+    ) -> Document:
         """Called by the client after the S3 PUT succeeds, to create the DB row,
-        enqueue OCR, sync the checklist, and notify the assigned accountant."""
+        schedule OCR, sync the checklist, and notify the assigned accountant.
+
+        `background_tasks` is optional so callers that don't have a live
+        request in flight (e.g. whatsapp_service.py's inbound-media path,
+        which runs from a webhook handler that already returns a fast 200
+        before this would matter) can still call this without one — OCR is
+        simply skipped in that case rather than run synchronously and risk
+        blocking the webhook response. See app/worker/tasks.py's docstring
+        for the no-separate-worker architecture this fits into.
+        """
         client = self._get_client_or_404(payload.client_id)
         self._assert_can_write(current_user, client)
 
@@ -99,7 +113,8 @@ class DocumentService:
         if payload.filing_request_id:
             self._sync_checklist_on_upload(payload.filing_request_id, payload.category, document)
 
-        process_document_ocr.delay(str(document.id))
+        if background_tasks is not None:
+            background_tasks.add_task(process_document_ocr, str(document.id))
 
         if client.assigned_accountant_id:
             self.db.add(Notification(

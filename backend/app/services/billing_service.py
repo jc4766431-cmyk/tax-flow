@@ -3,17 +3,25 @@ Business logic for subscription billing (the firm's own TaxFlow account —
 see models/billing.py's module docstring for why this is a distinct module
 from client invoicing).
 
-No payment gateway is wired up. Every method that would, in a real deployment,
-trigger a charge or a gateway-side subscription change is marked with a
-TODO(payment-gateway) comment at the exact call site — Razorpay is the
-obvious India-first choice per STRATEGY_REVIEW.md Phase 6/7, but that's a
-product decision to confirm with the user, not assume here. Until a gateway
-is wired up, subscriptions are created directly in ACTIVE/TRIALING status
-and period rollover is not automated (no Celery beat task exists yet to
-expire a subscription whose current_period_end has passed — see HANDOFF.md
-§2e's worker-task stubs for the pattern to extend when that's built).
+Razorpay is now wired up (Orders API + webhook signature verification —
+see app/services/razorpay_service.py and
+app/api/v1/endpoints/razorpay_webhook.py). Design notes:
+  - FREE tier has no payment step — created directly ACTIVE, same as before
+    Razorpay existed.
+  - Paid tiers: `create_subscription` creates a Razorpay Order for the
+    period's cost and stores its `id` in `payment_gateway_ref`, with the
+    subscription left in TRIALING status. The subscription only flips to
+    ACTIVE once razorpay_webhook.py confirms a `payment.captured`/
+    `order.paid` event against that order id — see that module.
+  - This uses one-off Orders per billing period (confirmed via webhook),
+    not Razorpay's separate recurring Subscriptions API — simpler, and
+    sufficient for a manual-renewal-reminder flow at this scale. That also
+    means there's no gateway-side "subscription" object to cancel: stopping
+    renewal is just not creating the next period's order (see
+    cancel_subscription below).
 """
 import calendar
+import logging
 import uuid
 from datetime import date, timedelta
 
@@ -30,6 +38,9 @@ from app.schemas.billing import (
     SubscriptionCreate,
     SubscriptionUpgrade,
 )
+from app.services.razorpay_service import RazorpayNotConfiguredError, razorpay_service
+
+logger = logging.getLogger(__name__)
 
 
 def _add_one_month(d: date) -> date:
@@ -47,6 +58,13 @@ def _period_end(start: date, billing_period: BillingPeriod) -> date:
     if billing_period == BillingPeriod.ANNUAL:
         return start + timedelta(days=365)
     return _add_one_month(start)
+
+
+def _period_cost(plan: Plan, seats: int) -> float:
+    """Total INR cost for one billing period at `seats` seats. FREE-tier /
+    custom-priced (Enterprise, price_per_seat_inr null) plans should never
+    reach here — callers guard against that separately."""
+    return float(plan.price_per_seat_inr or 0) * seats
 
 
 class PlanService:
@@ -165,22 +183,51 @@ class SubscriptionService:
                 "please get in touch.",
             )
 
-        # TODO(payment-gateway): before marking this ACTIVE for a paid tier,
-        # a real deployment would create a customer + subscription on the
-        # gateway (Razorpay, if that's confirmed as the choice — see this
-        # module's docstring) and only flip to ACTIVE on a successful
-        # payment/webhook confirmation, storing the gateway's subscription id
-        # in payment_gateway_ref. FREE tier has no such step. Until a gateway
-        # exists, every subscription is created ACTIVE directly.
         today = date.today()
+
+        if plan.tier == PlanTier.FREE:
+            # No payment step — created directly ACTIVE, same as before
+            # Razorpay was wired up.
+            subscription = Subscription(
+                firm_id=firm_id,
+                plan_id=plan.id,
+                seats=payload.seats,
+                billing_period=payload.billing_period,
+                status=SubscriptionStatus.ACTIVE,
+                current_period_start=today,
+                current_period_end=_period_end(today, payload.billing_period),
+            )
+            return self.subscriptions.create(subscription)
+
+        # Paid tier: create a Razorpay Order for this period's cost, store
+        # its id, and leave the subscription TRIALING until
+        # razorpay_webhook.py confirms payment against that order and flips
+        # it to ACTIVE — see this module's docstring for why Orders
+        # (confirmed via webhook) rather than Razorpay's recurring
+        # Subscriptions API.
+        amount = _period_cost(plan, payload.seats)
+        try:
+            order = razorpay_service.create_order(
+                amount,
+                receipt=f"sub-{firm_id}",
+                notes={"firm_id": str(firm_id), "plan_tier": plan.tier.value},
+            )
+        except RazorpayNotConfiguredError as exc:
+            logger.error(f"[billing:create_subscription] {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="Payments are not configured yet — cannot start a paid subscription.",
+            ) from exc
+
         subscription = Subscription(
             firm_id=firm_id,
             plan_id=plan.id,
             seats=payload.seats,
             billing_period=payload.billing_period,
-            status=SubscriptionStatus.ACTIVE,
+            status=SubscriptionStatus.TRIALING,
             current_period_start=today,
             current_period_end=_period_end(today, payload.billing_period),
+            payment_gateway_ref=order["id"],
         )
         return self.subscriptions.create(subscription)
 
@@ -189,10 +236,9 @@ class SubscriptionService:
     ) -> Subscription:
         """Changes plan and/or seats on the firm's current subscription
         in-place (does not start a new billing period or reset
-        current_period_end) — a real gateway integration would additionally
-        prorate the difference; that proration logic lives at the
-        TODO(payment-gateway) marker below, not here, since it depends on
-        the gateway's own proration semantics."""
+        current_period_end). If the change increases cost, creates a
+        Razorpay Order for the (simplified, non-day-prorated) difference —
+        see the inline comment below."""
         subscription = self.get_active_subscription(current_user, firm_id)
 
         new_plan = subscription.plan
@@ -208,6 +254,8 @@ class SubscriptionService:
                 )
             subscription.plan_id = new_plan.id
 
+        old_cost = _period_cost(subscription.plan, subscription.seats)
+
         new_seats = payload.seats if payload.seats is not None else subscription.seats
         self._validate_seats(new_plan, new_seats)
         subscription.seats = new_seats
@@ -215,9 +263,31 @@ class SubscriptionService:
         if payload.billing_period is not None:
             subscription.billing_period = payload.billing_period
 
-        # TODO(payment-gateway): prorate/charge the difference in cost here
-        # (new seats * new plan price vs. what was already paid for the rest
-        # of the current period) once a gateway is wired up.
+        # If the change increases cost, create a Razorpay Order for the
+        # difference and store it as the new payment_gateway_ref — the
+        # upgrade itself takes effect immediately (matching this method's
+        # existing behavior/docstring, which doesn't gate the plan/seat
+        # change itself on payment), but the order gives the firm something
+        # concrete to pay against for the prorated difference. No proper
+        # day-based proration (e.g. "12 days left in the period") is
+        # computed here — full new-period cost minus full old-period cost,
+        # a simplification appropriate at this scale rather than a true
+        # per-day proration engine.
+        new_cost = _period_cost(new_plan, new_seats)
+        if new_cost > old_cost:
+            try:
+                order = razorpay_service.create_order(
+                    new_cost - old_cost,
+                    receipt=f"sub-upgrade-{subscription.id}",
+                    notes={"subscription_id": str(subscription.id)},
+                )
+                subscription.payment_gateway_ref = order["id"]
+            except RazorpayNotConfiguredError as exc:
+                logger.error(f"[billing:upgrade_subscription] {exc}")
+                # Don't block the plan/seat change on payments not being
+                # configured yet — same reasoning as create_subscription's
+                # FREE-tier path having no payment step at all.
+
         return self.subscriptions.update(subscription)
 
     def cancel_subscription(
@@ -228,12 +298,39 @@ class SubscriptionService:
         if payload.at_period_end:
             subscription.cancel_at_period_end = True
         else:
-            # TODO(payment-gateway): cancel the gateway-side subscription
-            # immediately here too, once one exists, so the firm isn't billed
-            # for a period they no longer have access to.
+            # No gateway-side "subscription" object to cancel — this design
+            # uses one-off, webhook-confirmed Orders per billing period
+            # (see this module's docstring), not Razorpay's recurring
+            # Subscriptions API, so there's nothing on Razorpay's side that
+            # would otherwise keep charging. Setting status to CANCELLED
+            # here is sufficient: no next-period order is ever created for
+            # a cancelled subscription (process_subscription_period_rollovers
+            # / billing.py only act on non-CANCELLED rows).
             subscription.status = SubscriptionStatus.CANCELLED
             subscription.cancelled_at = date.today()
 
+        return self.subscriptions.update(subscription)
+
+    def mark_active_from_webhook(
+        self, payment_gateway_ref: str, razorpay_payment_id: str
+    ) -> Subscription | None:
+        """Called by razorpay_webhook.py once a webhook event confirms
+        payment against an order id stored in payment_gateway_ref by
+        create_subscription/upgrade_subscription. Flips TRIALING -> ACTIVE
+        (new subscription) and clears PAST_DUE the same way (a firm paying
+        an overdue renewal). Returns None (not an error) if no subscription
+        matches — the webhook handler also checks Invoice.razorpay_order_id
+        for the same order id.
+
+        Overwrites payment_gateway_ref with the payment id (rather than
+        leaving the order id) — the order has served its purpose once paid,
+        and the payment id is the more useful reference to keep around."""
+        subscription = self.subscriptions.get_by_payment_gateway_ref(payment_gateway_ref)
+        if subscription is None:
+            return None
+        if subscription.status in (SubscriptionStatus.TRIALING, SubscriptionStatus.PAST_DUE):
+            subscription.status = SubscriptionStatus.ACTIVE
+        subscription.payment_gateway_ref = razorpay_payment_id
         return self.subscriptions.update(subscription)
 
 

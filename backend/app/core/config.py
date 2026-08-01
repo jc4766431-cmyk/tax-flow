@@ -28,11 +28,6 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str
 
-    # Redis / Celery
-    REDIS_URL: str = "redis://localhost:6379/0"
-    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
-
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000"]
 
@@ -43,19 +38,19 @@ class Settings(BaseSettings):
             return [i.strip() for i in v.split(",")]
         return v
 
-    # Object storage
+    # Object storage — Cloudflare R2 (S3-compatible; see storage_service.py,
+    # which is written generically against the S3 API and only uses
+    # operations R2 supports: put_object/get_object + presigned PUT/GET).
+    # S3_ENDPOINT_URL should be https://<account-id>.r2.cloudflarestorage.com
+    # S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY come from an R2 API token
+    # (Cloudflare dashboard -> R2 -> Manage API Tokens), not an AWS IAM user.
+    # R2 doesn't use AWS regions — "auto" is R2's own convention and is what
+    # boto3 should be given here, not a real AWS region name.
     S3_ENDPOINT_URL: str | None = None
     S3_ACCESS_KEY_ID: str | None = None
     S3_SECRET_ACCESS_KEY: str | None = None
     S3_BUCKET_NAME: str = "taxflow-documents"
-    S3_REGION: str = "us-east-1"
-
-    # Email
-    SMTP_HOST: str | None = None
-    SMTP_PORT: int = 587
-    SMTP_USER: str | None = None
-    SMTP_PASSWORD: str | None = None
-    EMAIL_FROM: str = "noreply@taxflow.example"
+    S3_REGION: str = "auto"
 
     # Rate limiting
     RATE_LIMIT_PER_MINUTE: int = 60
@@ -84,14 +79,14 @@ class Settings(BaseSettings):
     # endpoint is ever exposed on a real public URL.
     WHATSAPP_APP_SECRET: str | None = None
 
-    # Email channel (§2e generalization of NotificationChannelSender).
-    # SMTP_HOST unset => EmailSender falls back to a no-op logger, same
-    # pattern as WhatsAppBusinessAPISender when its credentials are unset.
-    SMTP_HOST: str | None = None
-    SMTP_PORT: int = 587
-    SMTP_USERNAME: str | None = None
-    SMTP_PASSWORD: str | None = None
-    SMTP_USE_TLS: bool = True
+    # Email channel (§2e generalization of NotificationChannelSender) — via
+    # Resend's HTTP API rather than raw SMTP (smaller diff given no SMTP
+    # provider was ever actually wired up, and one less protocol/credential
+    # shape to manage, per the "minimize moving pieces" decision for this
+    # deployment). RESEND_API_KEY unset => EmailSender falls back to a
+    # no-op logger, same pattern as WhatsAppBusinessAPISender when its
+    # credentials are unset.
+    RESEND_API_KEY: str | None = None
     EMAIL_FROM_ADDRESS: str = "no-reply@taxflow.app"
 
     # SMS channel (§2e generalization of NotificationChannelSender, second
@@ -107,6 +102,40 @@ class Settings(BaseSettings):
     # (not yet implemented; falls back to tesseract if selected).
     OCR_PROVIDER: str = "tesseract"
     GOOGLE_DOCUMENT_AI_PROCESSOR_ID: str | None = None
+    # Documents above this size are skipped for auto-OCR (logged, not
+    # crashed) rather than run on the same small free-tier instance that
+    # also serves API requests — see app/worker/tasks.py.
+    OCR_MAX_FILE_SIZE_MB: int = 5
+    # Explicit ceiling passed to pdf2image.convert_from_bytes — deliberately
+    # lower than its default, for the same reason as the size threshold
+    # above (bounded memory/CPU on a 0.1 vCPU / 512MB instance).
+    OCR_RENDER_DPI: int = 150
+
+    # Razorpay — India-first payment gateway for both the firm's own
+    # TaxFlow subscription billing (app/services/billing_service.py) and
+    # the firm's client invoicing (app/services/invoice_service.py). Get
+    # RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET from Settings -> API Keys in the
+    # Razorpay dashboard (test mode keys start with rzp_test_), and
+    # RAZORPAY_WEBHOOK_SECRET from Settings -> Webhooks when you add the
+    # webhook URL there (this is a value *you* set when creating the
+    # webhook, not one Razorpay generates for you). Unset =>
+    # razorpay_service raises a clear, visible error on any call that would
+    # need it (creating a payment order is not a best-effort notification
+    # like the channel senders above — a missing gateway config here should
+    # be a loud failure, not a silent no-op).
+    RAZORPAY_KEY_ID: str | None = None
+    RAZORPAY_KEY_SECRET: str | None = None
+    RAZORPAY_WEBHOOK_SECRET: str | None = None
+
+    # Sentry — error monitoring, no-op if unset (see app/main.py).
+    SENTRY_DSN: str | None = None
+
+    # Shared-secret header required on GET /internal/tasks/heartbeat (see
+    # app/api/v1/endpoints/internal.py) — this endpoint runs the scheduled
+    # jobs that used to be a Celery beat schedule, so it must not be
+    # publicly triggerable. Generate a long random string for this in every
+    # real environment; there is no safe default.
+    INTERNAL_TASK_SECRET: str | None = None
 
 
 settings = Settings()

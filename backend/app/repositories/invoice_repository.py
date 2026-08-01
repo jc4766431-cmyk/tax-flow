@@ -13,6 +13,13 @@ class InvoiceRepository:
     def get_by_id(self, invoice_id: uuid.UUID) -> Invoice | None:
         return self.db.get(Invoice, invoice_id)
 
+    def get_by_razorpay_order_id(self, razorpay_order_id: str) -> Invoice | None:
+        """Used by razorpay_webhook.py to find which invoice a confirmed
+        payment.captured/order.paid event belongs to."""
+        return self.db.scalar(
+            select(Invoice).where(Invoice.razorpay_order_id == razorpay_order_id)
+        )
+
     def list(
         self,
         *,

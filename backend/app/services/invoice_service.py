@@ -3,11 +3,18 @@ Business logic for client invoicing (HANDOFF.md §5). Staff-only (require_admin
 at the router level — invoicing is a firm-admin/accountant action, not a
 client-facing write). Firm-scoped like task_service.py/document_service.py.
 
-No payment gateway: `mark_paid` is a manual staff action recording a
-reference (bank transfer/UPI/cheque number), matching the reasoning in
-models/billing.py's Subscription.payment_gateway_ref TODO.
+Two ways to record payment:
+  - `mark_paid`: manual staff action recording an external reference (bank
+    transfer/UPI/cheque number) — unchanged, still the right path for firms
+    collecting payment outside Razorpay.
+  - `create_payment_order` + razorpay_webhook.py: creates a Razorpay Order
+    for the invoice total; a confirmed `payment.captured`/`order.paid`
+    webhook event calls `_mark_paid_from_webhook` to flip status to PAID
+    and record the Razorpay payment id in the same `payment_reference`
+    field `mark_paid` uses.
 """
 import datetime
+import logging
 import uuid
 
 from fastapi import HTTPException
@@ -19,6 +26,9 @@ from app.models.invoice import Invoice, InvoiceStatus
 from app.models.user import User
 from app.repositories.invoice_repository import InvoiceRepository
 from app.schemas.invoice import InvoiceCreate, InvoiceMarkPaid, InvoiceUpdate
+from app.services.razorpay_service import RazorpayNotConfiguredError, razorpay_service
+
+logger = logging.getLogger(__name__)
 
 
 class InvoiceService:
@@ -131,6 +141,48 @@ class InvoiceService:
         invoice.status = InvoiceStatus.PAID
         invoice.paid_at = payload.paid_at or datetime.date.today()
         invoice.payment_reference = payload.payment_reference
+        return self.invoices.save(invoice)
+
+    def create_payment_order(self, invoice_id: uuid.UUID, current_user: User) -> Invoice:
+        """Creates a Razorpay Order for the invoice's total_amount and stores
+        its id on razorpay_order_id, for the client to pay against. Stays in
+        SENT status — razorpay_webhook.py calls `mark_paid_from_webhook`
+        (below) once Razorpay confirms the payment; this is not a
+        replacement for `mark_paid`, just an additional way to reach PAID."""
+        invoice = self.get_invoice(invoice_id, current_user)
+        if invoice.status not in (InvoiceStatus.SENT, InvoiceStatus.OVERDUE):
+            raise HTTPException(
+                status_code=400,
+                detail="Only sent/overdue invoices can have a payment order created",
+            )
+        try:
+            order = razorpay_service.create_order(
+                float(invoice.total_amount),
+                receipt=invoice.invoice_number,
+                notes={"invoice_id": str(invoice.id)},
+            )
+        except RazorpayNotConfiguredError as exc:
+            logger.error(f"[invoices:create_payment_order] {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="Online payment is not configured yet — use 'mark paid' with a manual reference instead.",
+            ) from exc
+
+        invoice.razorpay_order_id = order["id"]
+        return self.invoices.save(invoice)
+
+    def mark_paid_from_webhook(self, razorpay_order_id: str, razorpay_payment_id: str) -> Invoice | None:
+        """Called by razorpay_webhook.py once a webhook event confirms
+        payment against an order id created by create_payment_order.
+        Returns None (rather than raising) if no invoice matches — the
+        webhook handler also checks Subscription.payment_gateway_ref for
+        the same order id, so "no match here" isn't necessarily an error."""
+        invoice = self.invoices.get_by_razorpay_order_id(razorpay_order_id)
+        if invoice is None:
+            return None
+        invoice.status = InvoiceStatus.PAID
+        invoice.paid_at = datetime.date.today()
+        invoice.payment_reference = razorpay_payment_id
         return self.invoices.save(invoice)
 
     def cancel_invoice(self, invoice_id: uuid.UUID, current_user: User) -> Invoice:
