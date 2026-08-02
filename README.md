@@ -13,7 +13,7 @@ what's stubbed, known issues to fix, and the design system already in use.
 Render/Neon/Cloudflare R2/Cloudflare Workers services are configured by
 hand in each provider's dashboard, not via a Render Blueprint.
 
-## Quick start
+## Quick start 
 
 Prerequisite: PostgreSQL 16 installed and running locally (e.g.
 `brew install postgresql` / `apt install postgresql`), with a `taxflow`
