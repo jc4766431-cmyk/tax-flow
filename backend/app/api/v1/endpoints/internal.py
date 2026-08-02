@@ -11,17 +11,25 @@ since the last run — tracked durably in the `system_state` table (see
 app/models/system_state.py) so a redeploy or cold start doesn't reset an
 in-memory timer and cause the jobs to fire on every restart.
 
-This is under `/internal` and gated on a shared-secret header specifically
-so it is NOT the same thing UptimeRobot would hit for a plain liveness
-check — `GET /health` (app/main.py) still exists, unauthenticated, for
-that. Point UptimeRobot's monitor at THIS endpoint (with the secret header
-configured in UptimeRobot's request settings), not at /health, once
-scheduled jobs matter.
+This is under `/internal` and gated on a shared secret specifically so it
+is NOT the same thing UptimeRobot would hit for a plain liveness check —
+`GET /health` (app/main.py) still exists, unauthenticated, for that.
+
+The secret can be sent either as an `X-Internal-Task-Secret` header or as
+a `?secret=...` query parameter — both are checked, whichever is present.
+Custom HTTP headers are a paid-tier-only feature on some uptime monitors
+(e.g. UptimeRobot's free plan doesn't support them), so the query-param
+form exists specifically so this works on a free monitoring plan. The
+tradeoff, knowingly accepted: a URL is more likely to end up somewhere
+incidental (browser history if opened manually, a proxy's access log) than
+a header is — acceptable here since the only thing this secret gates is
+triggering already-idempotent, non-destructive scheduled jobs a bit early,
+not access to any actual data.
 """
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from sqlalchemy import select
 
 from app.core.config import settings
@@ -45,22 +53,24 @@ _LAST_RUN_KEY = "last_scheduled_run_at"
 _MIN_INTERVAL = timedelta(minutes=55)
 
 
-def _check_secret(x_internal_task_secret: str | None) -> None:
+def _check_secret(header_secret: str | None, query_secret: str | None) -> None:
     """No safe default: if INTERNAL_TASK_SECRET isn't configured, every
     request is rejected rather than silently trusted — this endpoint runs
     real scheduled jobs and must never be publicly triggerable."""
-    if not settings.INTERNAL_TASK_SECRET or x_internal_task_secret != settings.INTERNAL_TASK_SECRET:
+    provided = header_secret or query_secret
+    if not settings.INTERNAL_TASK_SECRET or provided != settings.INTERNAL_TASK_SECRET:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid X-Internal-Task-Secret",
+            detail="Missing or invalid task secret (X-Internal-Task-Secret header or ?secret= query param)",
         )
 
 
 @router.get("/tasks/heartbeat")
 def tasks_heartbeat(
     x_internal_task_secret: str | None = Header(default=None, alias="X-Internal-Task-Secret"),
+    secret: str | None = Query(default=None),
 ):
-    _check_secret(x_internal_task_secret)
+    _check_secret(x_internal_task_secret, secret)
 
     db = SessionLocal()
     try:
