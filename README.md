@@ -36,7 +36,7 @@ npm install
 npm run dev
 ```
 
-There is no separate worker process to start — scheduled jobs (deadline
+There is no separate worker  process to start — scheduled jobs (deadline
 reminders, missing-document escalation, subscription expiry) run inline
 from `GET /internal/tasks/heartbeat` when polled, and document OCR runs via
 FastAPI `BackgroundTasks` on the same process. See
