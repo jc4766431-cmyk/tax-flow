@@ -9,11 +9,27 @@ from app.models.user import UserRole
 
 
 class UserRegister(BaseModel):
+    """
+    Public, unauthenticated self-registration. Deliberately does NOT accept
+    `role` or `firm_id` from the client — every self-registered account is
+    always a CLIENT with no firm attached (see AuthService.register).
+
+    Staff accounts (firm_admin/accountant/reviewer) and firm-scoped clients
+    are created exclusively through the firm-signup and invite-accept flows
+    (`POST /auth/register-firm`, `POST /auth/accept-invite`), which set
+    role/firm_id server-side, never from unauthenticated client input.
+    Accepting `role`/`firm_id` here used to let any anonymous caller
+    self-register as `super_admin` or as `firm_admin` of an arbitrary
+    firm_id — a privilege-escalation hole that made the firm-scoping RBAC
+    checks in app/api/deps.py meaningless, since an attacker could just
+    mint themselves a super_admin token instead of working around the
+    scoping. Found and fixed during the Phase 1 firm-scoping
+    live-verification pass — see HANDOFF.md.
+    """
+
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=1, max_length=255)
-    firm_id: uuid.UUID | None = None
-    role: UserRole = UserRole.CLIENT
 
 
 class UserLogin(BaseModel):

@@ -56,7 +56,7 @@ def seed_demo() -> bool:
         db.flush()
 
         admin = User(
-            email="admin@demo.taxflow.test",
+            email="admin@demo.taxflow.dev",
             hashed_password=hash_password(DEMO_PASSWORD),
             full_name="Asha Rao",
             role=UserRole.FIRM_ADMIN,
@@ -65,7 +65,7 @@ def seed_demo() -> bool:
             is_email_verified=True,
         )
         accountant = User(
-            email="accountant@demo.taxflow.test",
+            email="accountant@demo.taxflow.dev",
             hashed_password=hash_password(DEMO_PASSWORD),
             full_name="Vikram Shah",
             role=UserRole.ACCOUNTANT,
@@ -77,8 +77,8 @@ def seed_demo() -> bool:
         db.flush()
 
         demo_clients = [
-            ("priya@demo.taxflow.test", "Priya Nair", "Nair Textiles", "ABCDE1234F", "27ABCDE1234F1Z5"),
-            ("rohit@demo.taxflow.test", "Rohit Mehta", "Mehta Consulting", "PQRSX5678L", None),
+            ("priya@demo.taxflow.dev", "Priya Nair", "Nair Textiles", "ABCDE1234F", "27ABCDE1234F1Z5"),
+            ("rohit@demo.taxflow.dev", "Rohit Mehta", "Mehta Consulting", "PQRSX5678L", None),
         ]
 
         client_rows = []

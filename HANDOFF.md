@@ -3,6 +3,15 @@
 Read this fully before writing any code. It tells you exactly what exists,
 what's fake/stubbed, and what to build next, in order.
 
+**A note on how to read this file: it is NOT in strict chronological
+order.** Numbered `UPDATE N` entries were mostly prepended to the top of
+`## 0` as they happened, but UPDATE 24/25/26/27 were appended at the very
+*bottom* of the file instead. **The true, most-recent ground truth is
+UPDATE 27, at the end of this file** — read it first, then treat
+everything above it (including UPDATE 22 immediately below this note) as
+history. This confusion is itself a lesson: don't assume position in the
+file means recency — check the `UPDATE N` number.
+
 **UPDATE 22 (this pass — built exactly two long-flagged frontend gaps,
 code-only, explicitly no `npm install`/`npm run build`/browser session
 run): (1) Messaging UI — the §2d backend module (`/messages/*`) has
@@ -2311,3 +2320,175 @@ caveat — the following was run for real, in this environment, this pass:
   project. Everything above was verified against local Postgres and local
   `uvicorn`, not the real hosted services this is ultimately headed for.
 
+## UPDATE 27 (Phase 0 + Phase 1 of the "demo-data to production" prompt —
+real live verification performed in this sandbox, a real unprompted
+security bug found and fixed, Phases 2-7 NOT started)
+
+**This is the current, true ground truth for this repo — see the note at
+the very top of this file about reading order.**
+
+### What this pass actually did, in order
+
+**1. Phase 0 item 1 (`.test` email domains) — done, live-confirmed.**
+`backend/scripts/seed_demo.py` used `@demo.taxflow.test` addresses for all
+seeded users. `.test` is an RFC 2606 reserved TLD, and the `email-validator`
+library (used under the hood by Pydantic's `EmailStr`) rejects any address
+ending in a reserved label — `.test`/`.example`/`.invalid`/`.localhost` —
+**during syntax validation, with no network call**, so this wasn't a
+theoretical risk, it would 422 on every real login/register attempt.
+Confirmed directly: `validate_email("admin@demo.taxflow.test",
+check_deliverability=False)` raises; `validate_email("admin@demo.taxflow.dev",
+...)` doesn't. Fixed by changing all four seeded addresses in
+`seed_demo.py` to `demo.taxflow.dev`. Grepped the whole repo (`.py`, `.md`,
+`.ts`/`.tsx`) for `.test`/`.example`/`.invalid`/`.localhost` email
+addresses — no other instances found. (`frontend/verify_auth_flow.py`'s
+`playwright.test@example.com` is fine — the reserved-label check matches
+the domain's last label, and `example.com`'s last label is `com`, not
+`example`; confirmed this directly too, not assumed.)
+
+**2. Phase 0 item 2 (alembic drift vs. the live Neon DB) — partially
+done.** This sandbox has no network route to Neon (or to Render/Cloudflare
+— the egress allowlist here is limited to pypi/npm/github/ubuntu package
+mirrors), so `alembic current` against the *actual* production database
+could not be run, and that check is genuinely still open. What I could and
+did do locally: confirmed the 9-migration chain
+(`ba50f413c7a2` → ... → `c2e5f7b03a12`) is a single clean linear chain with
+no branching or gaps, applied it from empty against a real local Postgres
+16 (see below), and ran `alembic revision --autogenerate` afterward, which
+came back with **zero diff** — the SQLAlchemy models match what those
+migrations actually produce, exactly. That's real signal that the
+migration chain itself is internally consistent, but it is **not** the
+same as confirming the live Neon DB is actually stamped at `c2e5f7b03a12`
+— someone with real Neon access still needs to run `alembic current`
+against the direct connection string and compare to `head` before trusting
+this fully, per the prompt's explicit instruction not to blindly run
+`alembic upgrade head` without understanding drift first.
+
+**3. Phase 1 (firm-scoping RBAC) — now genuinely live-verified in this
+environment, with a real automated test suite.** Every prior claim of
+"live-verified" for this (§0g, the note near line ~881) was made in a
+different, now-gone sandbox session — per this file's own ground rules,
+that doesn't count as durably proven, so I re-did it for real, here, now:
+
+- Installed real PostgreSQL 16 locally (`apt-get install postgresql`,
+  network access to `archive.ubuntu.com` is allowed here), created the
+  `taxflow`/`taxflow_test` roles and databases matching `.env.example`.
+- Fresh venv, `pip install -r requirements.txt` — resolves cleanly.
+- `alembic upgrade head` against a real, empty local Postgres — all 9
+  migrations applied cleanly (see #2 above for the drift-check detail).
+- Booted real `uvicorn` against it, hit it with real HTTP requests:
+  `GET /health` → `200`, `GET /api/v1/openapi.json` → all 55 routes load.
+- **Found a real, previously-unflagged bug while setting up test
+  accounts**: `POST /auth/register` accepted `role` and `firm_id` directly
+  from the unauthenticated request body. Any anonymous caller could
+  self-register as `super_admin`, or as `firm_admin`/`accountant` of an
+  arbitrary `firm_id` — which makes `assert_firm_scoped` irrelevant, since
+  there's no need to defeat firm-scoping if you can just mint yourself
+  `super_admin`. The frontend never triggered this (it only ever sends
+  email/password/full_name), so it sat live and unexercised. Confirmed the
+  hole directly with a real request (`role: "super_admin"` in the payload)
+  before fixing it, then confirmed the fix with the same request after —
+  the response now always comes back `"role": "client"`, `"firm_id":
+  null`, regardless of what's sent. Fixed in `app/schemas/auth.py`
+  (`UserRegister` no longer has `role`/`firm_id` fields at all) and
+  `app/services/auth_service.py` (`AuthService.register` hard-codes
+  `UserRole.CLIENT`/`firm_id=None` server-side). This means Phase 2's
+  firm-signup and invite-accept flows are now the *only* way to create a
+  non-client account — which is the correct design anyway, but worth
+  flagging loudly since it wasn't asked for and changes the shape of
+  what Phase 2 needs to build.
+- Wrote `backend/tests/test_firm_scoping.py` (real pytest, not a manual
+  script) with its own `tests/conftest.py` fixtures: a dedicated
+  `taxflow_test` Postgres database, migrated via `alembic upgrade head`
+  through the `alembic` Python API (not a subprocess), truncated between
+  tests for isolation. Test setup creates firms/staff users directly via
+  SQLAlchemy (matching the DB's real uppercase enum member names, e.g.
+  `FIRM_ADMIN` — confirmed via `alembic/versions/ba50f413c7a2_initial_schema.py`,
+  per the prompt's specific warning about this) rather than through
+  `POST /auth/register`, since that endpoint can no longer create
+  non-client accounts (see above) — this is also just the correct pattern
+  for test setup regardless.
+- **`pytest tests/test_firm_scoping.py -v` — all 5 tests pass against the
+  real local Postgres described above:**
+  - `test_accountant_b_cannot_read_firm_a_client` — a client created by
+    accountant A is scoped to firm A regardless of what `firm_id` the
+    request body claims (not attacker-settable); accountant B gets `403`
+    reading it (not 404/empty), and it's excluded from B's client list.
+  - `test_super_admin_bypasses_firm_scoping` — `super_admin` can read any
+    firm's client.
+  - `test_accountant_b_cannot_read_or_modify_firm_a_tasks` — `GET`/`PATCH
+    .../status`/`DELETE` on firm A's task as accountant B all `403`; firm
+    A's tasks are excluded from both `GET /tasks` and `GET /tasks/board`
+    for accountant B; `super_admin` still sees everything.
+  - `test_super_admin_client_less_task_rejected` — confirms the documented
+    §0f behavior (400, not a crash) when `super_admin` tries to create a
+    task with no `client_id` to derive a `firm_id` from.
+  - `test_register_cannot_self_assign_role_or_firm` — regression test for
+    the bug found above; sends `role: "super_admin"` and a real `firm_id`
+    to `POST /auth/register` and asserts the created user comes back as
+    `client`/`firm_id: null` regardless.
+- Old `backend/verify_firm_scoping.py` (the manual script) is now
+  superseded by this pytest file for anything that runs in CI — it still
+  works as a manual sanity check against a running server, but its account
+  setup goes through `POST /auth/register` with `role`/`firm_id` in the
+  payload, which the fix above makes a no-op (it'll create client accounts
+  regardless of what it asks for, so it will now fail loudly at its own
+  `assert r.status_code in (200, 201)` calls or downstream `403`s depending
+  on exactly what it's asserting — haven't run it since the fix, since
+  `test_firm_scoping.py` covers the same ground correctly and is the
+  version that should be trusted). Left in place for now rather than
+  deleted, but it should probably be updated or removed in a follow-up
+  pass so it doesn't mislead someone into running it and reading stale
+  results.
+
+### What's still genuinely unverified / not started
+
+- **Phase 0 item 2's live Neon check** — see above, needs real Neon access.
+- **Phases 2 through 7 were not started this pass.** Per the prompt's own
+  ground rule ("don't build Phase 2/3/4 on top of Phase 1 until Phase 1 is
+  actually, live, confirmed fixed"), and given the size of this prompt,
+  this pass stopped after Phase 1 was genuinely done rather than rushing
+  shallow, unverified passes at the later phases. Specifically still open:
+  - Phase 2 (self-serve firm signup / staff invite / client invite flows)
+    — **not built at all**. Worth noting explicitly: this is now slightly
+    different in scope than the prompt originally described, because the
+    register privilege-escalation fix above means these flows are now the
+    *only* path to a non-client account, not just "the nice self-serve
+    path" — get this right, it's now load-bearing for RBAC, not just UX.
+  - Phase 3 (scheduled-job stub bodies) — **turns out this is already
+    fully implemented** in the current tree
+    (`app/worker/tasks.py::dispatch_due_reminders`/
+    `escalate_overdue_document_requests`/`expire_subscriptions` all have
+    real bodies, not `# TODO`s — see UPDATE 26/§0o/the file's own history).
+    The prompt's Phase 3 description was written against an older repo
+    state. Still worth a live-verify pass (seed a near-due filing, hit the
+    heartbeat endpoint, confirm a real Notification row lands) — not done
+    this pass, but it's a verification task now, not a build task.
+  - Phase 4 (real Razorpay/Resend/Sentry credentials) — **cannot be done
+    in this sandbox**, no network route to any of those three services and
+    no credentials exist for this project regardless (per UPDATE 26).
+    Needs to happen in an environment with real network egress and someone
+    who can create the test-mode accounts.
+  - Phase 5 (frontend build) — not attempted this pass; UPDATE 26/prior
+    updates already report `npm run build` succeeding after the font fix,
+    but per this file's own rule that should be re-confirmed, not assumed,
+    before relying on it again.
+  - Phase 6 (broader test coverage) — only `test_firm_scoping.py` exists.
+    `test_auth.py`, `test_documents.py`, `test_tasks.py`, `test_filings.py`
+    are all still missing. `tests/conftest.py` built this pass is written
+    to be reusable by those — the Postgres-backed fixture setup doesn't
+    need to be redone, just imported from.
+  - Phase 7 (full browser walkthrough as a real firm) — needs a real
+    browser and a deployed environment; not possible from this sandbox.
+
+### Environment note for whoever picks this up next
+
+Local verification in this pass used: PostgreSQL 16 installed via
+`apt-get` (`archive.ubuntu.com`/`security.ubuntu.com` reachable), a Python
+venv with `pip install -r requirements.txt`, `.env` copied from
+`.env.example` with `DATABASE_URL` pointed at a local `taxflow` database
+and a placeholder `SECRET_KEY`. No Redis was needed (this codebase has no
+Celery/Redis dependency — see UPDATE 26/`docs/deployment.md`). If your
+sandbox has no network egress to `archive.ubuntu.com` either, you won't be
+able to reproduce this locally the same way — check for a system Postgres
+first before assuming you're blocked.

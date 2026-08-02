@@ -18,7 +18,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import (
     PasswordResetConfirm,
@@ -50,8 +50,11 @@ class AuthService:
             email=payload.email.lower(),
             hashed_password=hash_password(payload.password),
             full_name=payload.full_name,
-            role=payload.role,
-            firm_id=payload.firm_id,
+            # Always CLIENT/no firm for public self-registration — role and
+            # firm_id are never accepted from client input here. See
+            # UserRegister's docstring for why.
+            role=UserRole.CLIENT,
+            firm_id=None,
         )
         return self.users.create(user)
 
