@@ -3,7 +3,7 @@
 Work-in-progress full-stack scaffold: Next.js (App Router, TypeScript,
 Tailwind) frontend + FastAPI (Python 3.12, SQLAlchemy 2.0, PostgreSQL)
 backend. Runs directly on locally installed services — no Docker, no
-Redis, no Celery required (see `docs/deployment.md` for why).
+Redis, no Celery required (see `docs/deployment.md` for why). 
 
 **Start here: [`HANDOFF.md`](./HANDOFF.md)** — a detailed status report and
 ordered task list for continuing this build. It covers what's implemented,
