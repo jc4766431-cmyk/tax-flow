@@ -66,6 +66,7 @@ def _check_secret(header_secret: str | None, query_secret: str | None) -> None:
 
 
 @router.get("/tasks/heartbeat")
+@router.head("/tasks/heartbeat")
 def tasks_heartbeat(
     x_internal_task_secret: str | None = Header(default=None, alias="X-Internal-Task-Secret"),
     secret: str | None = Query(default=None),
