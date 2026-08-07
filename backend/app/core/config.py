@@ -29,7 +29,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str
 
     # CORS
+    # CORS
     BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+
+    # Base URL of the deployed frontend — used to build links in emailed
+    # invites and password resets.
+    FRONTEND_URL: str = "http://localhost:3000"
 
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     @classmethod
