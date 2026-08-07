@@ -22,6 +22,7 @@ from app.models.user import Firm, User, UserRole
 from app.repositories.invite_repository import InviteRepository
 from app.schemas.invite import InviteCreate
 from app.services.notification_channels import EmailSender
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class InviteService:
 
         # Same hardcoded-frontend-domain pattern AuthService.request_password_reset
         # already uses for its own emailed link — not a new convention.
-        link = f"https://app.taxflow.example/accept-invite?token={invite.token}"
+        link = f"{settings.FRONTEND_URL}/accept-invite?token={invite.token}"
         body = (
             f"You've been invited to join {firm.name} on TaxFlow as "
             f"{payload.role.value.replace('_', ' ')}. Accept your invite "
