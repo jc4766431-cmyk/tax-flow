@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Clock, LayoutGrid } from "lucide-react";
+import { Clock, LayoutGrid, Plus } from "lucide-react";
 import { api } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/dashboard/empty-state";
+import { TaskModal } from "@/components/dashboard/task-modal";
 import { cn } from "@/lib/utils";
 import { KANBAN_COLUMNS, type KanbanBoard, type Task, type TaskStatus } from "@/lib/types";
 
@@ -25,7 +27,15 @@ function isOverdue(task: Task) {
   return new Date(task.due_date) < new Date();
 }
 
-function TaskCard({ task, onDragStart }: { task: Task; onDragStart: (id: string) => void }) {
+function TaskCard({
+  task,
+  onDragStart,
+  onEdit,
+}: {
+  task: Task;
+  onDragStart: (id: string) => void;
+  onEdit: (task: Task) => void;
+}) {
   const overdue = isOverdue(task);
   return (
     <div
@@ -34,7 +44,8 @@ function TaskCard({ task, onDragStart }: { task: Task; onDragStart: (id: string)
         e.dataTransfer.effectAllowed = "move";
         onDragStart(task.id);
       }}
-      className="cursor-grab select-none rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--bg-elevated)] p-3 text-sm shadow-sm active:cursor-grabbing"
+      onClick={() => onEdit(task)}
+      className="cursor-grab select-none rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--bg-elevated)] p-3 text-sm shadow-sm transition-colors hover:border-[var(--brass)]/50 active:cursor-grabbing"
     >
       <p className="font-medium text-[var(--ink)]">{task.title}</p>
       {task.description && (
@@ -61,6 +72,18 @@ export default function WorkflowBoardPage() {
   const queryClient = useQueryClient();
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<TaskStatus | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+
+  function openNewTask() {
+    setEditingTask(null);
+    setModalOpen(true);
+  }
+
+  function openEditTask(task: Task) {
+    setEditingTask(task);
+    setModalOpen(true);
+  }
 
   if (isError) throw error;
 
@@ -118,14 +141,21 @@ export default function WorkflowBoardPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-[family-name:var(--font-display)] text-2xl font-semibold text-[var(--ink)]">
-          Workflow board
-        </h1>
-        <p className="mt-1 text-sm text-[var(--ink-muted)]">
-          Drag a card into the next stage to move it forward.
-        </p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="font-[family-name:var(--font-display)] text-2xl font-semibold text-[var(--ink)]">
+            Workflow board
+          </h1>
+          <p className="mt-1 text-sm text-[var(--ink-muted)]">
+            Drag a card into the next stage to move it forward. Click a card to edit or delete it.
+          </p>
+        </div>
+        <Button onClick={openNewTask}>
+          <Plus size={16} /> New task
+        </Button>
       </div>
+
+      <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} task={editingTask} />
 
       {isEmpty ? (
         <EmptyState
@@ -170,7 +200,12 @@ export default function WorkflowBoardPage() {
                   </div>
                   <div className="flex flex-1 flex-col gap-2">
                     {tasks.map((task) => (
-                      <TaskCard key={task.id} task={task} onDragStart={setDraggingId} />
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        onDragStart={setDraggingId}
+                        onEdit={openEditTask}
+                      />
                     ))}
                   </div>
                 </Card>

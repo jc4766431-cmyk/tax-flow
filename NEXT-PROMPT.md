@@ -1,4 +1,32 @@
-# NEXT-PROMPT.md — Continue From: firm-invoicing module built (code-only,
+# NEXT-PROMPT.md — Continue From: the "onboard a client" frontend gap
+# (Add Client → Create Filing → Create/Edit/Delete Task → Engagement
+# Letter button) is now built across all four phases — code-only,
+# unverified, at the requester's explicit instruction to proceed
+# code-only in a sandbox with no network/Postgres access rather than
+# stopping after Phase 1 — see HANDOFF.md UPDATE 30 for the full
+# breakdown. Don't rebuild any of: `GET /users/pending-clients` (new
+# endpoint, resolves an accepted client invite to a `user_id` for
+# `POST /clients`), `components/dashboard/add-client-modal.tsx`,
+# `admin/clients/[id]/page.tsx` (new client overview page — didn't exist
+# before), `components/dashboard/new-filing-modal.tsx`,
+# `components/dashboard/task-modal.tsx` (create+edit+delete, wired into
+# the board), or the engagement-letter button on the client overview
+# page. Verify with a live server first, in this order: `alembic upgrade
+# head` + `uvicorn`, hit `GET /users/pending-clients` directly; `npm
+# install` + `npm run build` (none of the five touched/added `.tsx`
+# files have been type-checked); then a full browser click-through
+# (invite a client → accept → complete profile → new filing → confirm it
+# shows on /admin/calendar → new/edit/delete a task on the board →
+# generate + download an engagement letter). No test coverage was added
+# for any of it — same "§2g still open" gap prior passes already flagged.
+# Next genuinely-not-started gap once this is verified: a "pending client
+# invites" list isn't a persistent page section (folded into the Add
+# Client modal instead — fine as built, but revisit if product wants it
+# more visible), and there's still no way to revoke a sent invite from
+# the UI.
+
+
+# Previously continued from: firm-invoicing module built (code-only,
 # unverified, verification explicitly out of scope — see HANDOFF.md UPDATE
 # 25). §5's Invoice model, invoice_service/repository, /invoices endpoints,
 # and real reports.summary revenue are done — don't rebuild. Verify with a

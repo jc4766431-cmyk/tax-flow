@@ -2722,3 +2722,107 @@ network/DB access:
 `GET /invites` or `/admin/invites`-style page does — wasn't asked for);
 email/account verification for the invited user; revoking an
 already-sent invite before it's accepted or expires.
+
+## UPDATE 30 (code-only, unverified — no network/Postgres in this pass's
+sandbox) — the four "onboard a client" frontend gaps from NEXT-PROMPT.md
+
+Built all four phases from `NEXT-PROMPT.md` in one pass, at the requester's
+explicit instruction to proceed code-only despite the missing live-verify
+step (see caveat below) rather than stopping after Phase 1.
+
+**Phase 1 — Add Client.** Confirmed by reading `invite_service.py` that
+`client` is already a legal `InviteCreate.role` (only `super_admin` is
+blocked) — no backend change needed there. The real gap was resolving an
+accepted client invite's `user_id`: `GET /users` deliberately excludes
+CLIENT-role users (team-roster view), so there was no way for the frontend
+to find the id `POST /clients` needs. Added:
+- `UserRepository.list_pending_client_profiles_for_firm` — CLIENT-role
+  users in a firm with no `Client` row yet (outer join, `Client.id IS
+  NULL`).
+- `UserService.list_pending_client_profiles` — same `assert_firm_scoped`
+  gating as `list_staff`.
+- `GET /users/pending-clients?firm_id=` — new route on the existing
+  `users.py` router (inherits its router-level `require_admin` gate, same
+  persona as who sends invites).
+- Frontend: `components/dashboard/add-client-modal.tsx` (two tabs: send a
+  client invite; complete a profile for anyone who's accepted one) wired
+  into a new "Add client" button on `/admin/clients`.
+
+**Phase 2 — Create Filing.** No backend change — `POST /filings` was
+already correct. Built the `admin/clients/[id]/page.tsx` overview page
+NEXT-PROMPT.md flagged as missing (previously only `.../messages` existed),
+with a filings list (reusing the existing `<FilingTimeline>` component
+as-is) and a `NewFilingModal`. `GET /filings` has no `client_id` filter, so
+the overview page fetches all firm filings and filters client-side — same
+pattern the Calendar page already uses, not a new convention. Filing
+creation invalidates the `["filings"]` query key, which is a prefix match
+of the Calendar page's own `["filings", "all"]` key, so it re-fetches
+automatically — didn't need to touch calendar/page.tsx.
+
+**Phase 3 — Task create/edit/delete.** No backend change —
+`create_task`/`update_task`/`delete_task` were already correct, including
+the assignee/client_id firm-resolution validation NEXT-PROMPT.md called
+out. Built `components/dashboard/task-modal.tsx` (single component, both
+create and edit+delete modes) and wired a "New task" button plus
+click-to-edit on existing cards into `admin/board/page.tsx`. Left the
+drag-and-drop `PATCH /tasks/{id}/status` mutation untouched — the new
+modal only calls `POST /tasks` and `PATCH /tasks/{id}` (no `status` field
+in its body), so the two stay separate per the schema's own docstring.
+
+**Phase 4 — Engagement letter.** No backend change. Added a "Generate
+engagement letter" button to the new client overview page that calls
+`POST /clients/{id}/engagement-letter`, then reuses the exact
+`GET /documents/{id}/download-url` → `window.open` pattern already in
+`admin/documents/page.tsx`, rather than inventing a new download flow.
+
+**What was NOT done, and why this is still code-only:**
+This pass's sandbox had no network access and no PostgreSQL installed —
+`pip`/`npm install` and `apt-get install postgresql` were all
+unreachable, so none of the following happened:
+1. `alembic upgrade head` / booting `uvicorn` — the new
+   `GET /users/pending-clients` route was never actually hit.
+2. `npm install` + `npm run build` / `next dev` — none of the five new or
+   edited `.tsx` files (`add-client-modal.tsx`, `new-filing-modal.tsx`,
+   `task-modal.tsx`, `admin/clients/[id]/page.tsx`, edits to
+   `admin/clients/page.tsx` and `admin/board/page.tsx`) have been
+   type-checked, linted, or rendered in a browser.
+3. No real round trip: invite a client → accept → complete profile →
+   create a filing → create/edit/delete a task → generate + download an
+   engagement letter.
+4. The three edited Python files (`user_repository.py`, `user_service.py`,
+   `users.py`) were only checked with `ast.parse` (syntax-valid) — not
+   imported, since `fastapi`/`sqlalchemy` aren't installed in this
+   sandbox. The `Client` outer-join query in particular
+   (`list_pending_client_profiles_for_firm`) has not been run against a
+   real schema.
+
+**Before trusting this the way UPDATE 26/28's live-verified work should
+be trusted**, in an environment with real network/DB access, in order:
+1. `alembic upgrade head`, boot `uvicorn`, hit
+   `GET /users/pending-clients?firm_id=<real>` directly — confirm the
+   outer-join returns exactly the CLIENT-role users with no `Client` row,
+   and firm-scoping 403s correctly for a `firm_admin` passing a foreign
+   `firm_id`.
+2. `npm install` + `npm run build` in `frontend/` — confirm the five
+   touched/added files compile with no type errors, particularly the
+   `Client["firm_id"]` → `string | null` → `string | undefined` coercion
+   used when passing `currentUser?.firm_id` into the new modals.
+3. Full click-through in a real browser, staff-role-logged-in, in the
+   order NEXT-PROMPT.md specifies: send a client invite → accept it (or
+   seed-accept) → "Complete a profile" tab now lists them → fill
+   company/PAN/GSTIN → confirm the row appears in `GET /clients` and on
+   `/admin/clients` → open the client → "New filing" → confirm it appears
+   on `/admin/calendar` without a manual refresh → back on the board,
+   "New task", edit it, delete it, confirm the board updates without a
+   full reload → "Generate engagement letter" → confirm the PDF downloads
+   and the underlying `Document` shows up wherever
+   `admin/documents/page.tsx` already lists it.
+4. No test coverage was added for any of this (`GET
+   /users/pending-clients`, the new pages) — same "§2g still open" gap
+   UPDATE 29 already flagged for the invite flow.
+
+**Not built, out of scope for this pass:** a dedicated "pending client
+invites" list view (the complete-profile tab is folded into the Add
+Client modal, not a persistent page section); bulk actions; revoking a
+sent client invite from this UI (existing `/admin/team`-adjacent gap, not
+new).

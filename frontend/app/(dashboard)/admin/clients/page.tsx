@@ -3,14 +3,16 @@
 import { useEffect, useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import Link from "next/link";
-import { Search, Users, ChevronLeft, ChevronRight, MessageCircle } from "lucide-react";
+import { Search, Users, ChevronLeft, ChevronRight, MessageCircle, UserPlus } from "lucide-react";
 import { api } from "@/lib/api";
+import { useCurrentUser } from "@/hooks/use-auth";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/dashboard/empty-state";
+import { AddClientModal } from "@/components/dashboard/add-client-modal";
 import type { PaginatedClients } from "@/lib/types";
 
 const PAGE_SIZE = 20;
@@ -29,6 +31,8 @@ function useClients(search: string, page: number) {
 }
 
 export default function ClientsPage() {
+  const { data: currentUser } = useCurrentUser();
+  const [addOpen, setAddOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -50,14 +54,33 @@ export default function ClientsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-[family-name:var(--font-display)] text-2xl font-semibold text-[var(--ink)]">
-          Clients
-        </h1>
-        <p className="mt-1 text-sm text-[var(--ink-muted)]">
-          Everyone your firm is currently filing on behalf of.
-        </p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="font-[family-name:var(--font-display)] text-2xl font-semibold text-[var(--ink)]">
+            Clients
+          </h1>
+          <p className="mt-1 text-sm text-[var(--ink-muted)]">
+            Everyone your firm is currently filing on behalf of.
+          </p>
+        </div>
+        <Button
+          onClick={() => setAddOpen(true)}
+          disabled={!currentUser?.firm_id}
+          title={
+            !currentUser?.firm_id
+              ? "Adding clients is firm-scoped — open a specific firm to add one"
+              : undefined
+          }
+        >
+          <UserPlus size={16} /> Add client
+        </Button>
       </div>
+
+      <AddClientModal
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        firmId={currentUser?.firm_id ?? undefined}
+      />
 
       <div className="relative max-w-sm">
         <Search
@@ -108,7 +131,12 @@ export default function ClientsPage() {
                   {data.items.map((client) => (
                     <tr key={client.id} className="hover:bg-[var(--surface-hover)]">
                       <td className="px-5 py-3 font-medium text-[var(--ink)]">
-                        {client.company_name ?? "—"}
+                        <Link
+                          href={`/admin/clients/${client.id}`}
+                          className="hover:text-[var(--brass)]"
+                        >
+                          {client.company_name ?? "—"}
+                        </Link>
                       </td>
                       <td className="tabular px-5 py-3 text-[var(--ink-muted)]">
                         {client.pan_number ?? "—"}

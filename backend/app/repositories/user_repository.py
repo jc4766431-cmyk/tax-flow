@@ -6,6 +6,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.client import Client
 from app.models.user import User, UserRole
 
 
@@ -15,6 +16,25 @@ class UserRepository:
 
     def get_by_id(self, user_id: uuid.UUID) -> User | None:
         return self.db.get(User, user_id)
+
+    def list_pending_client_profiles_for_firm(self, firm_id: uuid.UUID) -> list[User]:
+        """CLIENT-role users in this firm who accepted an invite but don't
+        yet have a Client row — i.e. `POST /clients` was never called for
+        them. Pairs with the admin Clients page's 'Add client' flow: once a
+        client invite is accepted, the user shows up here so staff can fill
+        in company_name/PAN/GSTIN and complete the profile (see
+        HANDOFF-adjacent NEXT-PROMPT.md Phase 1)."""
+        stmt = (
+            select(User)
+            .outerjoin(Client, Client.user_id == User.id)
+            .where(
+                User.firm_id == firm_id,
+                User.role == UserRole.CLIENT,
+                Client.id.is_(None),
+            )
+            .order_by(User.full_name)
+        )
+        return list(self.db.scalars(stmt).all())
 
     def list_staff_for_firm(self, firm_id: uuid.UUID) -> list[User]:
         """Staff (non-client) users for a firm, for the admin Team page's
