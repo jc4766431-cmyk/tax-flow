@@ -17,6 +17,7 @@ from app.api.v1.endpoints import (
     razorpay_webhook,
     reports,
     tasks,
+    users,
     whatsapp,
 )
 
@@ -34,6 +35,7 @@ api_router.include_router(whatsapp.router)
 api_router.include_router(billing.router)
 api_router.include_router(invoices.router)
 api_router.include_router(invites.router)
+api_router.include_router(users.router)
 api_router.include_router(notifications.router)
 api_router.include_router(messages.router)
 api_router.include_router(automation.router)

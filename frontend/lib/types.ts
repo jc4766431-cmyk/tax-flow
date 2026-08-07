@@ -326,3 +326,59 @@ export interface MessagePage {
   page: number;
   page_size: number;
 }
+
+// --- Firms (platform / super_admin) --------------------------------------
+
+export interface Firm {
+  id: string;
+  name: string;
+  legal_name: string | null;
+  tax_registration_number: string | null;
+  address: string | null;
+  is_active: boolean;
+}
+
+// --- Staff invites ---------------------------------------------------------
+
+export type StaffRole = "firm_admin" | "accountant" | "reviewer";
+
+export interface StaffMember {
+  id: string;
+  full_name: string;
+  email: string;
+  role: UserRole;
+  is_active: boolean;
+}
+
+export interface Invite {
+  id: string;
+  email: string;
+  firm_id: string;
+  role: UserRole;
+  expires_at: string;
+  accepted_at: string | null;
+  created_at: string;
+}
+
+// --- Automation: reminders & escalations -----------------------------------
+
+export type ReminderChannel = "email" | "whatsapp" | "sms";
+
+export interface Reminder {
+  id: string;
+  filing_request_id: string;
+  days_before_deadline: number;
+  channel: ReminderChannel;
+  sent_at: string | null;
+  cancelled: boolean;
+}
+
+export interface EscalationStatus {
+  client_id: string;
+  client_name: string;
+  filing_request_id: string;
+  missing_categories: string[];
+  due_date: string | null;
+  days_overdue: number;
+  follow_ups_sent: number;
+}

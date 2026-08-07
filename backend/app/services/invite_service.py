@@ -10,6 +10,7 @@ User, matching where register()/register_firm() already live.
 """
 import logging
 import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
@@ -65,3 +66,10 @@ class InviteService:
         EmailSender().send_text(invite.email, body)
 
         return invite
+
+    def list_invites(self, current_user: User, firm_id: uuid.UUID) -> list[Invite]:
+        """Lists pending/accepted/expired invites for a firm — same
+        firm-scoping rule as create_invite (super_admin may target any firm,
+        firm_admin only their own)."""
+        assert_firm_scoped(current_user, firm_id)
+        return self.invites.list_for_firm(firm_id)

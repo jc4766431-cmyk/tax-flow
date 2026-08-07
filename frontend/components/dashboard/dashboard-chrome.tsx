@@ -21,9 +21,20 @@ const STAFF_NAV = [
   { href: "/admin/invoices", label: "Invoices" },
   { href: "/admin/calendar", label: "Calendar" },
   { href: "/admin/whatsapp", label: "WhatsApp" },
+  { href: "/admin/automation", label: "Automation" },
   { href: "/admin/reports", label: "Reports" },
   { href: "/settings", label: "Settings" },
 ];
+
+// firm_admin/super_admin only — staff management and the firm's own
+// billing, same tier as require_admin on the backend.
+const ADMIN_ONLY_NAV = [
+  { href: "/admin/team", label: "Team" },
+  { href: "/admin/billing", label: "Billing" },
+];
+
+// super_admin only — platform-level, cross-firm.
+const PLATFORM_NAV = [{ href: "/platform/firms", label: "Platform" }];
 
 export function DashboardChrome({
   user,
@@ -35,7 +46,17 @@ export function DashboardChrome({
   const { logout } = useAuth();
   const pathname = usePathname();
   const isStaff = user.role !== "client";
-  const nav = isStaff ? STAFF_NAV : CLIENT_NAV;
+  const isAdmin = user.role === "firm_admin" || user.role === "super_admin";
+  const isSuperAdmin = user.role === "super_admin";
+
+  const nav = isStaff
+    ? [
+        ...STAFF_NAV.slice(0, -1),
+        ...(isAdmin ? ADMIN_ONLY_NAV : []),
+        ...(isSuperAdmin ? PLATFORM_NAV : []),
+        STAFF_NAV[STAFF_NAV.length - 1],
+      ]
+    : CLIENT_NAV;
 
   return (
     <div className="min-h-screen bg-[var(--bg)]">
