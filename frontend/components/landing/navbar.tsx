@@ -21,7 +21,7 @@ export function Navbar() {
           <Link href="/login">
             <Button variant="ghost" size="sm">Client Login</Button>
           </Link>
-          <Link href="/register">
+          <Link href="/register-firm">
             <Button variant="primary" size="sm">Get Started</Button>
           </Link>
         </div>

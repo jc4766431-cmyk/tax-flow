@@ -38,11 +38,32 @@ export function useAuth() {
     router.push("/login");
   }
 
+  async function registerFirm(payload: {
+    firm_name: string;
+    email: string;
+    password: string;
+    full_name: string;
+  }) {
+    const { data } = await api.post("/auth/register-firm", payload);
+    toast.success(`${data.firm.name} is set up. Please sign in.`);
+    router.push("/login");
+  }
+
+  async function acceptInvite(payload: {
+    token: string;
+    full_name: string;
+    password: string;
+  }) {
+    await api.post("/auth/accept-invite", payload);
+    toast.success("Account created. Please sign in.");
+    router.push("/login");
+  }
+
   function logout() {
     tokenStorage.clear();
     queryClient.clear();
     router.push("/login");
   }
 
-  return { login, register, logout };
+  return { login, register, registerFirm, acceptInvite, logout };
 }

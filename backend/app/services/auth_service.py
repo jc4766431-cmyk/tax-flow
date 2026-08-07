@@ -3,6 +3,7 @@ Business logic for authentication: registration, login, token refresh.
 Kept separate from the API layer so it is independently unit-testable.
 """
 import uuid
+from datetime import datetime, timezone
 
 import pyotp
 from fastapi import HTTPException, status
@@ -18,9 +19,12 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.models.user import User, UserRole
+from app.models.user import Firm, User, UserRole
+from app.repositories.invite_repository import InviteRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import (
+    FirmRegister,
+    InviteAcceptRequest,
     PasswordResetConfirm,
     PasswordResetRequest,
     TokenPair,
@@ -57,6 +61,74 @@ class AuthService:
             firm_id=None,
         )
         return self.users.create(user)
+
+    def register_firm(self, payload: FirmRegister) -> tuple[Firm, User]:
+        """Public, unauthenticated self-serve firm signup — creates a new
+        Firm and its first firm_admin User in one transaction. Reuses this
+        class's own email-uniqueness check and hash_password() rather than
+        duplicating either, same as register() above.
+
+        Firm is flushed (not committed) first so its generated id is
+        available for the User row's firm_id FK, then both are committed
+        together — a failure constructing the User leaves neither row
+        persisted.
+        """
+        if self.users.get_by_email(payload.email):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with this email already exists",
+            )
+        firm = Firm(name=payload.firm_name)
+        self.db.add(firm)
+        self.db.flush()
+
+        user = User(
+            email=payload.email.lower(),
+            hashed_password=hash_password(payload.password),
+            full_name=payload.full_name,
+            role=UserRole.FIRM_ADMIN,
+            firm_id=firm.id,
+        )
+        self.db.add(user)
+        self.db.commit()
+        self.db.refresh(firm)
+        self.db.refresh(user)
+        return firm, user
+
+    def accept_invite(self, payload: InviteAcceptRequest) -> User:
+        """Public, unauthenticated. Creates a User with the role/firm_id the
+        matching Invite row specifies — never from this payload, same
+        privilege-escalation reasoning as UserRegister no longer accepting
+        role/firm_id directly (see that schema's docstring)."""
+        invites = InviteRepository(self.db)
+        invite = invites.get_by_token(payload.token)
+        if (
+            invite is None
+            or invite.accepted_at is not None
+            or invite.expires_at < datetime.now(timezone.utc)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired invite",
+            )
+        if self.users.get_by_email(invite.email):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with this email already exists",
+            )
+
+        user = User(
+            email=invite.email.lower(),
+            hashed_password=hash_password(payload.password),
+            full_name=payload.full_name,
+            role=invite.role,
+            firm_id=invite.firm_id,
+        )
+        self.users.create(user)
+
+        invite.accepted_at = datetime.now(timezone.utc)
+        invites.save(invite)
+        return user
 
     def authenticate(self, payload: UserLogin) -> TokenPair:
         user = self.users.get_by_email(payload.email)

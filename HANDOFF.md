@@ -5,9 +5,9 @@ what's fake/stubbed, and what to build next, in order.
 
 **A note on how to read this file: it is NOT in strict chronological
 order.** Numbered `UPDATE N` entries were mostly prepended to the top of
-`## 0` as they happened, but UPDATE 24/25/26/27 were appended at the very
-*bottom* of the file instead. **The true, most-recent ground truth is
-UPDATE 27, at the end of this file** — read it first, then treat
+`## 0` as they happened, but UPDATE 24/25/26/27/28/29 were appended at the
+very *bottom* of the file instead. **The true, most-recent ground truth is
+UPDATE 29, at the end of this file** — read it first, then treat
 everything above it (including UPDATE 22 immediately below this note) as
 history. This confusion is itself a lesson: don't assume position in the
 file means recency — check the `UPDATE N` number.
@@ -2492,3 +2492,233 @@ Celery/Redis dependency — see UPDATE 26/`docs/deployment.md`). If your
 sandbox has no network egress to `archive.ubuntu.com` either, you won't be
 able to reproduce this locally the same way — check for a system Postgres
 first before assuming you're blocked.
+
+## UPDATE 28 — real live verification of the frontend as it actually exists
+in the tree (not as older notes above describe it); one real bug found
+and fixed. Read this before trusting anything UPDATE 27 and earlier say
+about the frontend being "code-reviewed only."
+
+**Important correction to the record:** despite everything UPDATE 11-24
+say about §3d/§3e/landing/document-review/calendar/invoices-UI being
+partially built or "not started," **the actual repo tree already
+contains a finished, wired frontend** — `app/page.tsx` is the real landing
+page (not the create-next-app default), and every route the nav links to
+exists and compiles: `/`, `/login`, `/register`, `/forgot-password`,
+`/reset-password`, `/dashboard`, `/settings`, `/admin`, `/admin/clients`,
+`/admin/clients/[id]/messages`, `/admin/board`, `/admin/documents`
+(staff document-review queue — previously flagged as "not started" in
+§3e, it exists), `/admin/calendar` (previously flagged as "not started,"
+it exists), `/admin/invoices`, `/admin/whatsapp`, `/admin/reports`. Do not
+trust the "not started"/"orphaned files" language in older UPDATE
+sections above without checking the actual tree first — this file's own
+update history had drifted from the real state of the code.
+
+**What this pass did, for real, against a live stack:**
+- `npm install` — clean, 778 packages.
+- `npm run build` — compiled successfully, zero TypeScript errors, all 17
+  routes generated.
+- `npx eslint .` — found and fixed one real bug (below); zero errors after.
+- Installed PostgreSQL 16 + Redis locally, created the `taxflow` role/db,
+  ran `alembic upgrade head` — all 9 migrations applied cleanly against a
+  fresh database.
+- `python -m scripts.seed_plans` and `python -m scripts.seed_demo` — both
+  ran cleanly, seeded 5 plans + a demo firm/staff/clients/filings.
+- Booted real `uvicorn`, `GET /health` → 200, 55 routes in the OpenAPI
+  schema.
+- Booted real `npm run dev`, hit `/`, `/login`, `/dashboard`,
+  `/admin/invoices` — all 200.
+- Logged in for real as both the seeded `firm_admin` and a seeded
+  `client`, and hit the exact endpoints the newer pages call, with the
+  exact params they send: `GET /dashboard/firm-overview`,
+  `GET /invoices`, `GET /webhooks/whatsapp/messages`, `GET /filings`,
+  `GET /documents?status=uploaded` (the document-review page's real
+  default filter), `GET /dashboard/client-overview`,
+  `GET /notifications` — every one returned a 200 with the shape the
+  frontend expects. No frontend/backend schema drift found anywhere in
+  this pass.
+
+**One real bug found and fixed — React 19 purity violation in
+`app/(dashboard)/admin/invoices/page.tsx`:** the "create invoice" modal
+called `new Date()`/`Date.now()` directly in the component body to seed
+`issueDate`/`dueDate` state defaults. React's new purity lint
+(`react-hooks/purity`, enabled by `eslint-config-next` 16) correctly
+flags this as an impure call during render — it happened to work today,
+but is exactly the kind of thing that produces subtly wrong dates under
+concurrent rendering. **Fixed** by moving both calls into named functions
+passed as lazy `useState` initializers (`useState(defaultIssueDate)`
+instead of `useState(new Date()...)`), so the impure call only runs once,
+outside of render proper, matching the pattern React's docs recommend.
+Also removed one unnecessary `eslint-disable-next-line no-console` in
+`app/(dashboard)/error.tsx` that was flagged as a stale/unused directive.
+
+**What was NOT done this pass, still genuinely open:**
+- No real browser/Playwright session — this sandbox has network access to
+  package registries only, not to the Chromium download CDN Playwright
+  needs, so drag-and-drop on the Kanban board and click-through UX still
+  haven't been exercised with an actual pointer. The dev-server route
+  checks above confirm every page server-renders and its API calls are
+  correctly shaped, not that every interactive element behaves perfectly.
+- The WhatsApp webhook signature live-check (`verify_whatsapp_flow.py`)
+  is still not written — unrelated to the frontend, unchanged from every
+  prior update.
+- No real Razorpay/Resend/Sentry credentials exist, same as UPDATE 26.
+
+**Bottom line for whoever picks this up next:** the frontend is
+functionally complete and live-verified end-to-end against a real
+backend and real seeded data. There is no remaining "build the frontend"
+work — what's left (WhatsApp signing, real payment gateway credentials,
+a real browser/Playwright pass, broader `pytest` coverage) is
+verification and backend-integration work, not new frontend features.
+
+## UPDATE 29 — self-serve firm onboarding built (Phase 2 of the
+"demo-data to production" prompt, per UPDATE 27's flag that this is now
+load-bearing for RBAC, not just UX): `POST /auth/register-firm`,
+`POST /invites`, `POST /auth/accept-invite`, and their frontend pages.
+Code-only, explicitly no live server/DB/tests run — see "what was and
+wasn't verified" below before trusting this the way UPDATE 26/28 (which
+did run live) should be trusted.
+
+### What this pass built
+
+**1. `POST /auth/register-firm`** (public, unauthenticated) — closes the
+gap `UserRegister`'s own docstring already forward-referenced since
+UPDATE 27. `AuthService.register_firm` (`app/services/auth_service.py`)
+creates a `Firm` row and its first `firm_admin` `User` in one transaction
+(`db.flush()` the Firm to get its id for the User's FK, then a single
+`commit()` for both), reusing `self.users.get_by_email` and
+`hash_password()` rather than duplicating either — no new
+password-hashing or uniqueness-check logic was written. New schemas
+`FirmRegister`/`FirmRegisterRead` in `app/schemas/auth.py` (`UserRead` is
+defined earlier in that file specifically so `FirmRegisterRead.admin:
+UserRead` doesn't need a forward-ref/`model_rebuild()`). Wired into
+`app/api/v1/endpoints/auth.py`.
+
+**2. `Invite` model + `POST /invites` + `POST /auth/accept-invite`**
+(the staff/client invite flow, the second piece of Phase 2):
+- `app/models/invite.py` — `Invite` (email, firm_id, role, token,
+  expires_at, accepted_at — exactly the fields specified, plus the usual
+  `UUIDMixin`/`TimestampMixin` id/created_at/updated_at). `role` reuses
+  the existing `UserRole` enum/PG type, same as `User.role`. `token` is a
+  random opaque string (`secrets.token_urlsafe(32)`, not a JWT) so
+  revoking/expiring is a plain row update, no signing-key epoch needed.
+  Registered in `app/models/__init__.py`.
+- Migration `c72e87f79601_add_invites_table.py`, chained onto the real
+  current head (`c2e5f7b03a12`). Hand-written, not autogenerated — reuses
+  the existing `userrole` PG enum type via `postgresql.ENUM(...,
+  create_type=False)`, same lesson as `e8623919c959`'s
+  `_document_category`/`_document_status` (§0c bug #2): letting
+  autogenerate emit a second `CREATE TYPE userrole` here would fail with
+  `DuplicateObject`, exactly like that earlier bug.
+- `app/repositories/invite_repository.py` (`get_by_token`, `create`,
+  `save`), `app/schemas/invite.py` (`InviteCreate`/`InviteRead`),
+  `app/services/invite_service.py` (`InviteService.create_invite`) —
+  standard repository/service split.
+- `POST /invites` (`app/api/v1/endpoints/invites.py`) —
+  `firm_admin`/`super_admin` only (router-level `require_admin`, same
+  gate `invoices.py` uses), firm-scoped via the existing
+  `assert_firm_scoped(current_user, payload.firm_id)` helper —
+  `InviteCreate.firm_id` is explicit in the payload (not defaulted to the
+  caller's own firm), so a `firm_admin` targeting any firm other than
+  their own gets a 403, matching `invoice_service.create_invoice`'s
+  pattern exactly (payload carries the target, `assert_firm_scoped`
+  checks it) rather than `clients.py`'s silent-override pattern. Rejects
+  `role=SUPER_ADMIN` with a 400 (platform-level, not firm-scoped — an
+  invite can never mint one). Emails the invite link via the existing
+  `EmailSender` (Resend-based, no-op-and-log when `RESEND_API_KEY` is
+  unset — same dev-testing story as `AuthService.request_password_reset`,
+  the link's domain is the same hardcoded
+  `https://app.taxflow.example/...` placeholder that flow already uses).
+  Invites expire after 7 days (`INVITE_EXPIRY_DAYS` constant in
+  `invite_service.py` — not specified by the prompt, a reasonable default
+  picked for this pass; revisit if the product wants something else).
+  **Deliberately does not return the raw `token` in the API response** —
+  same reasoning as password-reset: it's a credential-equivalent link,
+  delivered by email (or the no-op logger's log line in dev) only, not
+  echoed back to whoever called `POST /invites`.
+- `POST /auth/accept-invite` (public, unauthenticated,
+  `AuthService.accept_invite`) — looks up the `Invite` by token, rejects
+  if missing/already-accepted/expired (400), rejects if the invite's
+  email is already registered (409, same conflict `register`/
+  `register_firm` use), then creates the `User` with `role`/`firm_id`
+  taken **only** from the `Invite` row — the request body
+  (`InviteAcceptRequest`: token, full_name, password) has no `role`/
+  `firm_id` fields at all, closing this off the same way UPDATE 27 closed
+  it for `POST /auth/register`. Marks `accepted_at` on success.
+
+**3. Frontend** — `/register-firm` and `/accept-invite` pages
+(`app/(auth)/register-firm/page.tsx`, `app/(auth)/accept-invite/page.tsx`),
+built by copying the existing `/register`/`/reset-password` pages'
+structure exactly: React Hook Form + Zod, `AuthCard`/`Input`/`Label`/
+`Button` reused as-is (no new UI primitives), `/accept-invite` reads
+`?token=` via `useSearchParams` inside a `Suspense` boundary just like
+`/reset-password` does. `hooks/use-auth.ts` gained `registerFirm()` and
+`acceptInvite()`, matching `login()`/`register()`'s existing shape
+(call the endpoint, toast, redirect to `/login`) — no separate one-off
+`axios` calls inlined into the pages. Landing page CTAs updated: navbar's
+"Get Started" button, the hero's "Get started free" button, and every
+pricing-tier card's CTA button (`components/landing/navbar.tsx`,
+`hero.tsx`, `pricing.tsx`) now link to `/register-firm` instead of
+`/register`. `/register` itself, and its own link from `/login`'s
+footer, are untouched — it's still the client self-signup path, per this
+prompt's explicit instruction not to change that.
+
+### What was and wasn't verified this pass
+
+**Explicitly code-only, per this pass's instructions — no live server, no
+`alembic upgrade head`, no `npm install`/`npm run build`, no HTTP
+requests, no tests written or run.** What was done instead:
+- `python3 -m py_compile` on every new/changed backend file individually,
+  then again as a whole-tree pass
+  (`find app -name "*.py" | xargs python3 -m py_compile`) — clean, no
+  syntax errors. This sandbox has no `fastapi`/`pydantic`/etc. installed
+  (confirmed: `import fastapi` fails), so this is syntax-only, the same
+  confidence level §0c/§0h/every "code-only" update in this file already
+  describes — not proof the migration applies cleanly, the RBAC checks
+  behave as documented under a real request, or the `FirmRegisterRead`/
+  `InviteRead` response models serialize correctly against real ORM rows.
+- A crude Node-based bracket/paren/brace-balance check (not a real
+  parse, not TypeScript-aware — same caveat §0k/§0m/§0n already gave this
+  exact technique) on the two new `.tsx` files and the edited
+  `hooks/use-auth.ts` — all balanced. `npm install` was not run in this
+  pass (no `node_modules` exists), so this is not a substitute for
+  `tsc`/`next build` and should not be read as one.
+- Manually traced `InviteService.create_invite`'s `assert_firm_scoped`
+  call and `AuthService.register_firm`'s flush-then-commit sequencing by
+  reading the code, not by executing it against a real Postgres.
+
+**What must be done before trusting this module the way UPDATE 26/28's
+live-verified work should be trusted** — in an environment with real
+network/DB access:
+1. `alembic upgrade head` against a real Postgres — confirm
+   `c72e87f79601` applies cleanly on top of `c2e5f7b03a12`, and that a
+   follow-up `alembic revision --autogenerate` comes back empty (no model/
+   schema drift, particularly around the reused `userrole` enum type).
+2. Boot `uvicorn`, hit `POST /auth/register-firm` for real: confirm a
+   `Firm` + `firm_admin` `User` both land in the DB, a repeat call with
+   the same email 409s, and the returned `firm_id` on the admin's token
+   (`GET /auth/me` after logging in) is correct.
+3. `POST /invites` as a seeded `firm_admin`: confirm 403 when targeting
+   another firm's `firm_id`, 400 on `role=super_admin`, and that the
+   no-op `EmailSender` log line contains the expected accept-invite link
+   with a real token — then `POST /auth/accept-invite` with that token:
+   confirm the created user's role/firm_id match the invite (not
+   anything a malicious payload could override), a second accept attempt
+   with the same token 400s, and an expired invite (manually backdate
+   `expires_at` in a DB shell) 400s too.
+4. `npm install` + `npm run build` — confirm both new pages compile and
+   the three landing-page CTA edits didn't break anything, then a real
+   browser click-through: navbar/hero/pricing "Get Started" → lands on
+   `/register-firm` → submit → redirected to `/login` → sign in → lands
+   on `/admin`. Also click through `/accept-invite?token=<real token>`
+   the same way.
+5. Extend `backend/tests/test_firm_scoping.py` (or a new
+   `test_firm_onboarding.py`, reusing its Postgres-backed `conftest.py`
+   fixtures per UPDATE 27's own note that they're written to be reused)
+   with real `pytest` coverage of all of the above — none exists yet for
+   this module, same as most of this codebase (§2g is still open).
+
+**Not built, out of scope for this pass:** any UI for a firm_admin to
+*list* or manage pending/expired invites (`POST /invites` exists, no
+`GET /invites` or `/admin/invites`-style page does — wasn't asked for);
+email/account verification for the invited user; revoking an
+already-sent invite before it's accepted or expires.

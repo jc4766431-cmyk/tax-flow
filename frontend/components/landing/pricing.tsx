@@ -92,7 +92,7 @@ export function Pricing() {
                     </li>
                   ))}
                 </ul>
-                <Link href="/register" className="mt-6 block">
+                <Link href="/register-firm" className="mt-6 block">
                   <Button
                     variant={tier.featured ? "primary" : "outline"}
                     size="sm"

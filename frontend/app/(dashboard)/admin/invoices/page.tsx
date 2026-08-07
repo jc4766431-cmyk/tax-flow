@@ -80,20 +80,24 @@ function CreateInvoiceModal({ open, onClose }: { open: boolean; onClose: () => v
   const { data: clientsPage } = useClientsList();
   const clients = clientsPage?.items ?? [];
 
-  const today = new Date().toISOString().slice(0, 10);
-  const inTwoWeeks = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  function defaultIssueDate() {
+    return new Date().toISOString().slice(0, 10);
+  }
+  function defaultDueDate() {
+    return new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  }
 
   const [clientId, setClientId] = useState("");
-  const [issueDate, setIssueDate] = useState(today);
-  const [dueDate, setDueDate] = useState(inTwoWeeks);
+  const [issueDate, setIssueDate] = useState(defaultIssueDate);
+  const [dueDate, setDueDate] = useState(defaultDueDate);
   const [taxRate, setTaxRate] = useState("18");
   const [notes, setNotes] = useState("");
   const [lineItems, setLineItems] = useState<InvoiceLineItem[]>([emptyLineItem()]);
 
   function reset() {
     setClientId("");
-    setIssueDate(today);
-    setDueDate(inTwoWeeks);
+    setIssueDate(defaultIssueDate());
+    setDueDate(defaultDueDate());
     setTaxRate("18");
     setNotes("");
     setLineItems([emptyLineItem()]);

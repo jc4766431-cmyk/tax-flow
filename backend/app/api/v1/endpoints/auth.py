@@ -6,6 +6,9 @@ from app.core.limiter import limiter
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.auth import (
+    FirmRegister,
+    FirmRegisterRead,
+    InviteAcceptRequest,
     PasswordResetConfirm,
     PasswordResetRequest,
     RefreshRequest,
@@ -17,6 +20,7 @@ from app.schemas.auth import (
     UserRead,
     UserRegister,
 )
+from app.schemas.firm import FirmRead
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -25,6 +29,25 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register(payload: UserRegister, db: Session = Depends(get_db)):
     return AuthService(db).register(payload)
+
+
+@router.post("/register-firm", response_model=FirmRegisterRead, status_code=status.HTTP_201_CREATED)
+def register_firm(payload: FirmRegister, db: Session = Depends(get_db)):
+    """Public, unauthenticated self-serve firm signup — creates a new Firm
+    and its first firm_admin User in one transaction (AuthService.register_firm).
+    This is the flow the landing page's "Get Started" CTA now points at for
+    the firm audience it's aimed at; /register remains the separate
+    client self-signup path."""
+    firm, admin = AuthService(db).register_firm(payload)
+    return FirmRegisterRead(firm=FirmRead.model_validate(firm), admin=UserRead.model_validate(admin))
+
+
+@router.post("/accept-invite", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+def accept_invite(payload: InviteAcceptRequest, db: Session = Depends(get_db)):
+    """Public, unauthenticated. Redeems a pending Invite (see POST /invites)
+    into a real User, with role/firm_id taken from the invite row, never
+    from this payload."""
+    return AuthService(db).accept_invite(payload)
 
 
 @router.post("/login", response_model=TokenPair)

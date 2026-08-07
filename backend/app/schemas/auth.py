@@ -6,6 +6,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.user import UserRole
+from app.schemas.firm import FirmRead
 
 
 class UserRegister(BaseModel):
@@ -82,3 +83,38 @@ class UserRead(BaseModel):
     is_active: bool
     is_email_verified: bool
     two_factor_enabled: bool
+
+
+class FirmRegister(BaseModel):
+    """
+    Public, unauthenticated self-serve firm signup —
+    `POST /auth/register-firm`, referenced by UserRegister's docstring
+    above. Creates a new Firm and its first firm_admin User in one
+    transaction (see AuthService.register_firm). This, along with
+    `POST /auth/accept-invite`, is now the only way to create a
+    non-CLIENT account, since UserRegister no longer accepts role/firm_id
+    (see that docstring for why).
+    """
+
+    firm_name: str = Field(min_length=1, max_length=255)
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    full_name: str = Field(min_length=1, max_length=255)
+
+
+class FirmRegisterRead(BaseModel):
+    # UserRead is defined above this class (not a forward reference) so
+    # this doesn't need a model_rebuild() call to resolve it.
+    firm: FirmRead
+    admin: UserRead
+
+
+class InviteAcceptRequest(BaseModel):
+    """Public, unauthenticated. `token` identifies a pending Invite row
+    (app/models/invite.py), which supplies the role/firm_id/email for the
+    new account server-side — never accepted from this payload, same
+    reasoning as UserRegister no longer accepting them directly."""
+
+    token: str
+    full_name: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
