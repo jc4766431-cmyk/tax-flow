@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import pyotp
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
-
+from app.core.config import settings
 import logging
 
 from app.core.security import (
@@ -203,7 +203,7 @@ class AuthService:
         body = (
             f"Hi {user.full_name}, use this link to reset your TaxFlow "
             f"password (expires in 30 minutes): "
-            f"https://app.taxflow.example/reset-password?token={token}"
+            f"{settings.FRONTEND_URL}/reset-password?token={token}"
         )
         EmailSender().send_text(user.email, body)
 
