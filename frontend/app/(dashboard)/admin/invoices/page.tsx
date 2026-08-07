@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -24,7 +25,27 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/dashboard/empty-state";
 import { Modal } from "@/components/dashboard/modal";
 import { useClientsList } from "@/hooks/use-clients";
+import { useCurrentUser } from "@/hooks/use-auth";
 import type { Invoice, InvoiceLineItem, InvoiceStatus } from "@/lib/types";
+
+// Invoices are firm_admin/super_admin only on the backend (require_admin
+// in app/api/v1/endpoints/invoices.py). Accountants/reviewers/clients who
+// land here directly (typed URL, stale bookmark, etc.) are bounced before
+// any /invoices request fires, rather than falling through to the generic
+// (dashboard)/error.tsx boundary on a 403.
+function useRequireInvoiceAccess() {
+  const router = useRouter();
+  const { data: user, isLoading } = useCurrentUser();
+  const allowed = !!user && (user.role === "firm_admin" || user.role === "super_admin");
+
+  useEffect(() => {
+    if (!isLoading && user && !allowed) {
+      router.replace("/admin");
+    }
+  }, [isLoading, user, allowed, router]);
+
+  return { allowed, checking: isLoading || !user };
+}
 
 const STATUS_OPTIONS: { value: InvoiceStatus | ""; label: string }[] = [
   { value: "", label: "All statuses" },
@@ -342,6 +363,8 @@ function MarkPaidModal({
 // --- Page ---------------------------------------------------------------
 
 export default function InvoicesPage() {
+  const { allowed, checking } = useRequireInvoiceAccess();
+
   const [statusFilter, setStatusFilter] = useState<InvoiceStatus | "">("");
   const [clientFilter, setClientFilter] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -354,6 +377,16 @@ export default function InvoicesPage() {
 
   const { data: invoices, isLoading, isError, error } = useInvoices(statusFilter, clientFilter);
   const queryClient = useQueryClient();
+
+  if (checking || !allowed) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-8 w-1/3" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+    );
+  }
 
   if (isError) throw error;
 
