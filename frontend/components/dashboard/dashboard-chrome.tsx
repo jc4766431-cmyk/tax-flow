@@ -18,7 +18,6 @@ const STAFF_NAV = [
   { href: "/admin/clients", label: "Clients" },
   { href: "/admin/board", label: "Workflow Board" },
   { href: "/admin/documents", label: "Document Review" },
-  { href: "/admin/invoices", label: "Invoices" },
   { href: "/admin/calendar", label: "Calendar" },
   { href: "/admin/whatsapp", label: "WhatsApp" },
   { href: "/admin/automation", label: "Automation" },
@@ -26,9 +25,10 @@ const STAFF_NAV = [
   { href: "/settings", label: "Settings" },
 ];
 
-// firm_admin/super_admin only — staff management and the firm's own
-// billing, same tier as require_admin on the backend.
+// firm_admin/super_admin only — staff management, the firm's own
+// billing, and invoicing — same tier as require_admin on the backend.
 const ADMIN_ONLY_NAV = [
+  { href: "/admin/invoices", label: "Invoices" },
   { href: "/admin/team", label: "Team" },
   { href: "/admin/billing", label: "Billing" },
 ];
