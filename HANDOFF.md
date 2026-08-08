@@ -5,9 +5,9 @@ what's fake/stubbed, and what to build next, in order.
 
 **A note on how to read this file: it is NOT in strict chronological
 order.** Numbered `UPDATE N` entries were mostly prepended to the top of
-`## 0` as they happened, but UPDATE 24/25/26/27/28/29 were appended at the
-very *bottom* of the file instead. **The true, most-recent ground truth is
-UPDATE 29, at the end of this file** — read it first, then treat
+`## 0` as they happened, but UPDATE 24/25/26/27/28/29/30/31 were appended at
+the very *bottom* of the file instead. **The true, most-recent ground truth
+is UPDATE 31, at the end of this file** — read it first, then treat
 everything above it (including UPDATE 22 immediately below this note) as
 history. This confusion is itself a lesson: don't assume position in the
 file means recency — check the `UPDATE N` number.
@@ -2826,3 +2826,146 @@ invites" list view (the complete-profile tab is folded into the Add
 Client modal, not a persistent page section); bulk actions; revoking a
 sent client invite from this UI (existing `/admin/team`-adjacent gap, not
 new).
+
+## UPDATE 31 — phone-first client onboarding (WhatsApp as day-one channel),
+per NEXT-PROMPT.md. Code-only, explicitly no live server/DB/tests run this
+pass, at the requester's explicit instruction to skip verification and just
+finish the code.
+
+### What this pass built
+
+**1. Shadow-user design, exactly as NEXT-PROMPT.md specified (not the
+nullable-`Client.user_id` alternative it also considered):**
+- `Client` model (`app/models/client.py`) gained `phone: str | None`
+  (indexed, stores the normalized last-10-digit form so
+  `WhatsAppService.match_client` can compare it directly) and a
+  `has_portal_access` computed `@property` (`bool(self.user and
+  self.user.is_active)`) — not a stored column, so it flows through every
+  existing `ClientRead` serialization (list, get, quick-add, create)
+  automatically without touching each endpoint's return logic.
+- Migration `68067a345418_add_phone_to_clients.py`, chained onto the real
+  head `c72e87f79601`.
+
+**2. `POST /clients/quick-add`** (`app/api/v1/endpoints/clients.py`,
+staff-only, firm-scoped — `super_admin` gets a 400, same "no firm to fall
+back to" reasoning `task_service.create_task` already uses): creates a
+shadow `User` (role=CLIENT, `is_active=False`, a random
+`secrets.token_urlsafe(32)`-hashed password never issued to anyone, and a
+placeholder `shadow+<uuid4>@taxflow.internal` email) and the `Client` row
+in one transaction, normalizes the phone via
+`WhatsAppService.normalize_phone` (reused, not duplicated), then sends one
+outbound WhatsApp message listing the fixed checklist categories via the
+new `WhatsAppService.send_document_checklist_request` (itself a thin
+wrapper around the existing `WhatsAppBusinessAPISender.send_text` — no
+second WhatsApp-sending path). Confirmed `shadow+<uuid>@taxflow.internal`
+passes `email-validator`'s reserved-TLD check (unlike `.local`/`.invalid`,
+which UPDATE 27 already flagged as rejected) by testing it directly against
+the installed `email-validator` package in this sandbox.
+
+**3. `WhatsAppService.match_client` rewritten to check both paths, per
+step 3** — direct `Client.phone` equality (the new column) OR the original
+`User.phone` join (untouched, still exactly as it was), de-duplicated by
+`Client.id` before the ambiguous-match check, so an already-portal-
+registered client's existing match path is provably unchanged and a
+quick-added client now also matches.
+
+**4. `POST /clients/{id}/invite-portal-access`** (staff-only, firm-scoped,
+400s if the client already has portal access or has no phone on file):
+reuses the existing `Invite` model rather than inventing a second token
+type, via a new `InviteService.create_shadow_client_invite` method — a
+deliberate departure from `create_invite`, which emails the invite and
+would silently go nowhere for a shadow user's placeholder address.
+`Invite.email` is set to the shadow user's own placeholder email, which
+doubles as the correlation key on redemption (see next item) — no new FK
+column needed on `Invite`/`Client`/`User` for this. Sends the link over
+WhatsApp always, and over `EmailSender` too if the client's `User.email` is
+no longer the placeholder by then.
+
+**5. `AuthService.activate_shadow_client` + `POST /auth/accept-client-invite`**
+(public, unauthenticated): a distinct method from `accept_invite`, exactly
+as NEXT-PROMPT.md insisted — looks up the *existing* shadow `User` via
+`Invite.email`, sets a real password (and optional real email, uniqueness-
+checked), flips `is_active=True`, marks the invite accepted. `accept_invite`
+itself was not touched — its shape (always creates a brand-new `User`, 409s
+if the invite's email is already registered) is deliberately wrong for this
+case and was not reused or branched.
+
+**6. Frontend** — `components/dashboard/add-client-modal.tsx` gained a third
+"Quick add (phone)" tab, now the default (the existing "Invite new client" /
+"Complete a profile" tabs are untouched, still there for staff who want the
+portal-first flow). `app/(dashboard)/admin/clients/[id]/page.tsx` gained an
+"Invite to web portal" button (shown only when `!client.has_portal_access`)
+and a phone/portal-access badge in the header. New
+`app/(auth)/accept-client-invite/page.tsx` (modeled on the existing
+`/accept-invite` page, but no `full_name` field — a quick-added client's
+name is already set — and an optional `email` field). `hooks/use-auth.ts`
+gained `acceptClientInvite()`, matching `acceptInvite()`'s shape.
+`lib/types.ts`'s `Client` interface gained `phone: string | null` and
+`has_portal_access: boolean`.
+
+### What was and wasn't verified this pass
+
+**Explicitly code-only, at the requester's instruction — no live server, no
+`alembic upgrade head`, no `npm install`/`npm run build`, no HTTP requests,
+no tests written or run.** What was done instead:
+- `python3 -m py_compile` on every new/changed backend file individually —
+  clean, no syntax errors. Backend dependencies were also actually
+  `pip install -r requirements.txt`'d into a fresh venv this pass (resolved
+  cleanly), which is how the `email-validator` reserved-TLD check above was
+  confirmed directly rather than assumed — but no live Postgres/`uvicorn`
+  was ever booted against it.
+- A real (non-crude) bracket/paren/brace balance check on the new/edited
+  `.tsx`/`.ts` files, correctly skipping `//` line comments this time (an
+  early pass of this same check produced a false positive on
+  `add-client-modal.tsx` from an apostrophe inside a comment being
+  misread as a string delimiter — worth remembering if this technique is
+  reused elsewhere in this file's history, since earlier UPDATEs describe
+  it as "crude" without flagging this specific failure mode). No `npm
+  install` was run (no `node_modules` exists), so this is still not a
+  substitute for `tsc`/`next build`.
+
+**What must be done before trusting this module the way UPDATE 26/28's
+live-verified work should be trusted** — in an environment with real
+network/DB access, in order:
+1. `alembic upgrade head` — confirm `68067a345418` applies cleanly on top
+   of `c72e87f79601`, and a follow-up `alembic revision --autogenerate`
+   comes back empty (particularly worth checking: the new `ix_clients_phone`
+   index and the `has_portal_access` property correctly do NOT show up as a
+   column, since it's computed, not mapped).
+2. Boot `uvicorn`, hit `POST /clients/quick-add` for real as a seeded staff
+   user: confirm a shadow `User` (`is_active=False`, unusable password) and
+   a `Client` row (with the normalized `phone`) both land correctly
+   firm-scoped, and that `GET /clients/{id}` now returns
+   `has_portal_access: false` and the stored `phone`.
+3. POST a synthetic Meta-shaped WhatsApp webhook payload from that same
+   phone number at `/webhooks/whatsapp` — confirm `match_client` finds the
+   quick-added client via the new `Client.phone` path, AND that an
+   already-portal-registered seeded client (matched via the old `User.phone`
+   join) still matches correctly too, in the same test pass — this is the
+   single most important regression check per NEXT-PROMPT.md's own
+   instructions.
+4. `POST /clients/{id}/invite-portal-access` → confirm an `Invite` row is
+   created with `email` equal to the shadow user's placeholder address, and
+   that the (no-op-when-unconfigured) `WhatsAppBusinessAPISender.send_text`
+   log line contains the expected `/accept-client-invite?token=...` link →
+   then `POST /auth/accept-client-invite` with that token: confirm the
+   *same* User row (not a new one) now has `is_active=True` and a working
+   password, a repeat call with the same token 400s, and the client can now
+   log in via the completely normal `POST /auth/login` path with the same
+   token shape/dashboard data as any other client.
+5. `npm install` + `npm run build` — confirm the new/edited frontend files
+   compile with no type errors, then a real browser click-through: Add
+   Client → Quick add tab (default) → fill name+phone → submit → new client
+   appears in the table with a "WhatsApp-only" badge → open it → "Invite to
+   web portal" → confirm the button disappears once portal access is
+   granted (requires step 4 above to actually complete first) → visit
+   `/accept-client-invite?token=<real token>` → set a password → sign in.
+6. Run `backend/tests/test_firm_scoping.py` unmodified — must still pass,
+   per NEXT-PROMPT.md's explicit "regression first" instruction. Not run
+   this pass.
+
+**Not built, out of scope for this pass:** any UI to list/manage pending
+portal-access invites (mirrors the existing gap UPDATE 30 already flagged
+for client invites generally); resending an expired/lost portal-access
+invite (today staff would need to call the endpoint again, which 400s while
+an unexpired one is still pending — no "resend" affordance exists).

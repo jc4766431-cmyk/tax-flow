@@ -12,6 +12,7 @@ from app.schemas.auth import (
     PasswordResetConfirm,
     PasswordResetRequest,
     RefreshRequest,
+    ShadowClientActivateRequest,
     TokenPair,
     TwoFactorDisable,
     TwoFactorSetupResponse,
@@ -48,6 +49,17 @@ def accept_invite(payload: InviteAcceptRequest, db: Session = Depends(get_db)):
     into a real User, with role/firm_id taken from the invite row, never
     from this payload."""
     return AuthService(db).accept_invite(payload)
+
+
+@router.post("/accept-client-invite", response_model=UserRead, status_code=status.HTTP_200_OK)
+def accept_client_invite(payload: ShadowClientActivateRequest, db: Session = Depends(get_db)):
+    """Public, unauthenticated. Redeems the invite created by
+    POST /clients/{id}/invite-portal-access — sets a real password (and
+    optionally a real email) on an existing quick-added client's shadow
+    User and flips is_active=True. After this, POST /auth/login behaves
+    exactly like any other client login (see AuthService.activate_shadow_client's
+    docstring for why this is a distinct method from accept_invite)."""
+    return AuthService(db).activate_shadow_client(payload)
 
 
 @router.post("/login", response_model=TokenPair)

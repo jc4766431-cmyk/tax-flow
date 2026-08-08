@@ -27,6 +27,7 @@ from app.schemas.auth import (
     InviteAcceptRequest,
     PasswordResetConfirm,
     PasswordResetRequest,
+    ShadowClientActivateRequest,
     TokenPair,
     TwoFactorDisable,
     TwoFactorSetupResponse,
@@ -125,6 +126,65 @@ class AuthService:
             firm_id=invite.firm_id,
         )
         self.users.create(user)
+
+        invite.accepted_at = datetime.now(timezone.utc)
+        invites.save(invite)
+        return user
+
+    def activate_shadow_client(self, payload: ShadowClientActivateRequest) -> User:
+        """Public, unauthenticated. Redeems an Invite created by
+        InviteService.create_shadow_client_invite — the portal-access
+        upgrade for a quick-added ("shadow user") client, see
+        app/models/client.py / NEXT-PROMPT.md step 4.
+
+        Deliberately a distinct method from accept_invite() above, not a
+        branch inside it: accept_invite's whole shape (create a brand-new
+        User, 409 if the invite's email is already registered) is wrong
+        here on purpose — the User already exists (the shadow user) and
+        finding it via Invite.email *is* the point, not a conflict to
+        reject. Overloading accept_invite with a flag would change what it
+        returns/does for the ordinary staff-invite case it already serves
+        correctly; keeping this separate means that case is provably
+        untouched.
+        """
+        invites = InviteRepository(self.db)
+        invite = invites.get_by_token(payload.token)
+        if (
+            invite is None
+            or invite.accepted_at is not None
+            or invite.expires_at < datetime.now(timezone.utc)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired invite",
+            )
+
+        # The shadow User this invite was created for — see
+        # InviteService.create_shadow_client_invite's docstring for why
+        # Invite.email (the shadow user's own placeholder address) is the
+        # correlation key rather than a new FK column.
+        user = self.users.get_by_email(invite.email)
+        if user is None:
+            # Data-integrity edge case (the shadow user was deleted after
+            # the invite was sent) — not a normal "already registered"
+            # conflict, so a distinct message rather than accept_invite's 409.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The account for this invite no longer exists",
+            )
+
+        if payload.email and payload.email.lower() != user.email.lower():
+            existing = self.users.get_by_email(payload.email)
+            if existing is not None and existing.id != user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An account with this email already exists",
+                )
+            user.email = payload.email.lower()
+
+        user.hashed_password = hash_password(payload.password)
+        user.is_active = True
+        self.users.update(user)
 
         invite.accepted_at = datetime.now(timezone.utc)
         invites.save(invite)

@@ -1,3 +1,4 @@
+import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -5,12 +6,18 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import assert_firm_scoped, get_current_user, require_staff
+from app.core.config import settings
+from app.core.security import hash_password
 from app.db.session import get_db
 from app.models.client import Client
 from app.models.user import User, UserRole
-from app.schemas.client import ClientCreate, ClientRead, PaginatedClients
+from app.schemas.client import ClientCreate, ClientQuickAdd, ClientRead, PaginatedClients
 from app.schemas.document import DocumentRead
+from app.schemas.invite import InviteRead
 from app.services.engagement_letter_service import generate_engagement_letter
+from app.services.invite_service import InviteService
+from app.services.notification_channels import EmailSender
+from app.services.whatsapp_service import WhatsAppService
 
 router = APIRouter(prefix="/clients", tags=["clients"])
 
@@ -55,6 +62,126 @@ def create_client(
     db.commit()
     db.refresh(client)
     return client
+
+
+@router.post("/quick-add", response_model=ClientRead, status_code=status.HTTP_201_CREATED)
+def quick_add_client(
+    payload: ClientQuickAdd,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_staff),
+):
+    """Phone-first client onboarding — see NEXT-PROMPT.md. Creates a
+    backing "shadow" User (role=CLIENT, a random unusable password never
+    issued to anyone, is_active=False, a placeholder @taxflow.internal
+    email so User.email's NOT NULL/unique constraint never has to change)
+    and the Client row in one transaction, then sends the first
+    document-request message over WhatsApp. Every existing relationship,
+    query, and RBAC check that assumes client.user exists keeps working
+    completely unmodified — see NEXT-PROMPT.md's "why this design" section
+    and whatsapp_service.py's module docstring.
+
+    Staff-only, firm-scoped exactly like create_client above: a
+    non-super-admin always creates the client in their own firm; there is
+    no firm_id in the request payload to override.
+    """
+    if current_user.role == UserRole.SUPER_ADMIN:
+        # A super_admin has no firm of their own to quick-add a client
+        # into — same "no firm to fall back to" rule task_service's
+        # create_task already applies for a client-less task by a
+        # super_admin. Quick-add is a firm-staff action; super_admin
+        # should use POST /clients (with an explicit firm_id) instead.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="super_admin has no firm to quick-add a client into",
+        )
+
+    normalized_phone = WhatsAppService.normalize_phone(payload.phone)
+    if not normalized_phone:
+        raise HTTPException(status_code=400, detail="A valid phone number is required")
+
+    shadow_user = User(
+        email=f"shadow+{uuid.uuid4().hex}@taxflow.internal",
+        # Random, never issued to anyone, never usable to log in — login is
+        # impossible until POST /auth/accept-client-invite (see
+        # AuthService.activate_shadow_client) sets a real password AND
+        # flips is_active below to True.
+        hashed_password=hash_password(secrets.token_urlsafe(32)),
+        full_name=payload.name,
+        role=UserRole.CLIENT,
+        firm_id=current_user.firm_id,
+        is_active=False,
+    )
+    db.add(shadow_user)
+    db.flush()
+
+    client = Client(
+        user_id=shadow_user.id,
+        firm_id=current_user.firm_id,
+        phone=normalized_phone,
+        company_name=payload.company_name,
+        pan_number=payload.pan_number,
+        gstin=payload.gstin,
+    )
+    db.add(client)
+    db.commit()
+    db.refresh(client)
+
+    # Fire-and-forget-ish: send the first document-request message. Not
+    # backgrounded via BackgroundTasks — this is a single outbound API
+    # call (WhatsAppBusinessAPISender.send_text no-ops instantly when
+    # unconfigured, same as everywhere else in this codebase that sends
+    # a notification synchronously), not the multi-second OCR/media-
+    # download work BackgroundTasks is used for elsewhere in this router.
+    WhatsAppService(db).send_document_checklist_request(payload.phone, payload.name)
+
+    return client
+
+
+@router.post("/{client_id}/invite-portal-access", response_model=InviteRead, status_code=status.HTTP_201_CREATED)
+def invite_portal_access(
+    client_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_staff),
+):
+    """Optional upgrade for a quick-added ("shadow user") client to real
+    web-portal access — see NEXT-PROMPT.md step 4. Staff-only, firm-scoped.
+    Sends the accept-invite link over WhatsApp (this client's whole
+    relationship with the product so far has been WhatsApp, per
+    NEXT-PROMPT.md — don't switch channels on them for this) and, if the
+    client's User already has a real (non-placeholder) email by now, over
+    email too.
+    """
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    assert_firm_scoped(current_user, client.firm_id)
+
+    if client.has_portal_access:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This client already has web portal access",
+        )
+    if not client.phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This client has no phone number on file to send the invite to",
+        )
+
+    invite = InviteService(db).create_shadow_client_invite(client, current_user)
+    db.commit()
+    db.refresh(invite)
+
+    link = f"{settings.FRONTEND_URL}/accept-client-invite?token={invite.token}"
+    message = (
+        f"Hi {client.user.full_name}, you can now set up full web portal "
+        f"access to view your filings and documents anytime: {link} "
+        f"(link expires in 7 days)"
+    )
+    WhatsAppService(db).sender.send_text(client.phone, message)
+    if not client.user.email.endswith("@taxflow.internal"):
+        EmailSender().send_text(client.user.email, message)
+
+    return invite
 
 
 @router.get("/{client_id}", response_model=ClientRead)

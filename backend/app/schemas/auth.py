@@ -109,6 +109,21 @@ class FirmRegisterRead(BaseModel):
     admin: UserRead
 
 
+class ShadowClientActivateRequest(BaseModel):
+    """POST /auth/accept-client-invite — redeems the Invite created by
+    POST /clients/{id}/invite-portal-access (a quick-added/"shadow user"
+    client, see app/models/client.py + NEXT-PROMPT.md). Deliberately a
+    separate schema from InviteAcceptRequest: this path activates an
+    EXISTING shadow User in place rather than creating a new one (see
+    AuthService.activate_shadow_client), and needs an optional real email
+    since the shadow User's current one is an unusable
+    @taxflow.internal placeholder."""
+
+    token: str
+    password: str = Field(min_length=8, max_length=128)
+    email: EmailStr | None = None
+
+
 class InviteAcceptRequest(BaseModel):
     """Public, unauthenticated. `token` identifies a pending Invite row
     (app/models/invite.py), which supplies the role/firm_id/email for the

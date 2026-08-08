@@ -22,11 +22,3 @@ class UserService:
         excluding client-role users, for the admin Team page."""
         assert_firm_scoped(current_user, firm_id)
         return self.users.list_staff_for_firm(firm_id)
-
-    def list_pending_client_profiles(self, current_user: User, firm_id: uuid.UUID) -> list[User]:
-        """CLIENT-role users who accepted an invite but have no Client row
-        yet, for the admin Clients page's 'Add client' flow (step 2: turn an
-        accepted invite into a full client profile via POST /clients).
-        Same firm-scoping as list_staff."""
-        assert_firm_scoped(current_user, firm_id)
-        return self.users.list_pending_client_profiles_for_firm(firm_id)

@@ -59,11 +59,21 @@ export function useAuth() {
     router.push("/login");
   }
 
+  async function acceptClientInvite(payload: {
+    token: string;
+    password: string;
+    email?: string;
+  }) {
+    await api.post("/auth/accept-client-invite", payload);
+    toast.success("Portal access set up. Please sign in.");
+    router.push("/login");
+  }
+
   function logout() {
     tokenStorage.clear();
     queryClient.clear();
     router.push("/login");
   }
 
-  return { login, register, registerFirm, acceptInvite, logout };
+  return { login, register, registerFirm, acceptInvite, acceptClientInvite, logout };
 }

@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.client import Client
-from app.models.document import DocumentCategory
+from app.models.document import CHECKLIST_CATEGORIES, DocumentCategory
 from app.models.user import User
 from app.models.whatsapp import (
     WhatsAppInboundMessage,
@@ -54,6 +54,19 @@ from app.services.storage_service import storage_service
 logger = logging.getLogger(__name__)
 
 _MEDIA_TYPES = {WhatsAppMessageType.IMAGE, WhatsAppMessageType.DOCUMENT}
+
+# Plain-language labels for the fixed checklist, used only for the outbound
+# quick-add welcome message (NEXT-PROMPT.md step 2) — kept here rather than
+# on the DocumentCategory enum itself since this wording is WhatsApp-copy
+# specific, not a general-purpose display label.
+_CHECKLIST_LABELS: dict[DocumentCategory, str] = {
+    DocumentCategory.PAN_CARD: "PAN card",
+    DocumentCategory.AADHAAR: "Aadhaar",
+    DocumentCategory.GST_REPORT: "GST report",
+    DocumentCategory.SALARY_SLIP: "salary slip",
+    DocumentCategory.INVESTMENT_PROOF: "investment proof",
+    DocumentCategory.BANK_STATEMENT: "bank statement",
+}
 
 
 class WhatsAppWebhookVerificationError(Exception):
@@ -146,6 +159,24 @@ class WhatsAppService:
         items = list(self.db.scalars(stmt).all())
         return items, total
 
+    # --- Quick-add client onboarding (NEXT-PROMPT.md step 2) -------------
+
+    def send_document_checklist_request(self, to_phone: str, client_name: str) -> None:
+        """The first message a quick-added client gets — lists the fixed
+        checklist categories in plain language and asks them to reply with
+        photos, one at a time. One outbound call, not one per category.
+        Reuses WhatsAppBusinessAPISender.send_text (self.sender) — no second
+        WhatsApp-sending path. No-ops with a log line when
+        WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID are unset, same as
+        every other call through self.sender in this module.
+        """
+        items = ", ".join(_CHECKLIST_LABELS[c] for c in CHECKLIST_CATEGORIES)
+        body = (
+            f"Hi {client_name}, please reply here with photos of: {items} — "
+            "send them one at a time and we'll confirm each."
+        )
+        self.sender.send_text(to_phone, body)
+
     # --- Meta's GET verification handshake ------------------------------
 
     def verify_webhook_challenge(
@@ -179,16 +210,36 @@ class WhatsAppService:
         return digits[-10:] if len(digits) >= 10 else digits
 
     def match_client(self, from_phone: str) -> Client | None:
+        """Matches an inbound WhatsApp sender to a Client two ways, per
+        NEXT-PROMPT.md step 3:
+          1. Directly against Client.phone (quick-added clients — see
+             app/api/v1/endpoints/clients.py's quick-add endpoint, the
+             only writer of this column, always stored pre-normalized).
+          2. The original join through User.phone (already-portal-
+             registered clients whose phone happens to be set on their
+             User row) — kept exactly as it was, not removed, so any
+             match that worked before this change keeps working.
+        Both are tried and the results de-duplicated by Client.id rather
+        than short-circuiting on the first match, so a client who somehow
+        matches both ways still counts as one unambiguous match, not two.
+        """
         normalized = self.normalize_phone(from_phone)
         if not normalized:
             return None
-        stmt = (
-            select(Client)
-            .join(User, User.id == Client.user_id)
-            .where(User.phone.isnot(None))
-            .where(User.phone.like(f"%{normalized}"))
+
+        direct_matches = list(
+            self.db.scalars(select(Client).where(Client.phone == normalized)).all()
         )
-        matches = list(self.db.scalars(stmt).all())
+        user_join_matches = list(
+            self.db.scalars(
+                select(Client)
+                .join(User, User.id == Client.user_id)
+                .where(User.phone.isnot(None))
+                .where(User.phone.like(f"%{normalized}"))
+            ).all()
+        )
+        matches = list({c.id: c for c in direct_matches + user_join_matches}.values())
+
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:

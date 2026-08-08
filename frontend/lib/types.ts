@@ -207,7 +207,9 @@ export interface Client {
   company_name: string | null;
   pan_number: string | null;
   gstin: string | null;
+  phone: string | null;
   assigned_accountant_id: string | null;
+  has_portal_access: boolean;
 }
 
 export interface PaginatedClients {

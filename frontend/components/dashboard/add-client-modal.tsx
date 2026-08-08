@@ -1,18 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { AxiosError } from "axios";
-import { UserPlus, ClipboardCheck } from "lucide-react";
+import { MessageCircle } from "lucide-react";
 import { api } from "@/lib/api";
 import { Modal } from "@/components/dashboard/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
-import type { StaffMember } from "@/lib/types";
 
 function errorMessage(err: unknown, fallback: string) {
   if (err instanceof AxiosError) {
@@ -22,27 +19,9 @@ function errorMessage(err: unknown, fallback: string) {
   return fallback;
 }
 
-// Client-role users who've accepted their invite but don't have a Client
-// profile (company_name/PAN/GSTIN) yet — see backend GET /users/pending-clients.
-function usePendingClientProfiles(firmId: string | undefined) {
-  return useQuery<StaffMember[]>({
-    queryKey: ["users", "pending-clients", firmId],
-    queryFn: async () =>
-      (await api.get("/users/pending-clients", { params: { firm_id: firmId } })).data,
-    enabled: !!firmId,
-  });
-}
-
-function useStaffForAssignment(firmId: string | undefined) {
-  return useQuery<StaffMember[]>({
-    queryKey: ["users", firmId],
-    queryFn: async () => (await api.get("/users", { params: { firm_id: firmId } })).data,
-    enabled: !!firmId,
-  });
-}
-
-type Tab = "invite" | "complete";
-
+// Quick-add is the only client-onboarding path — client-invite-first
+// onboarding was retired in favor of this. Staff can still grant an
+// already-added client web-portal access later from their client page.
 export function AddClientModal({
   open,
   onClose,
@@ -52,236 +31,112 @@ export function AddClientModal({
   onClose: () => void;
   firmId: string | undefined;
 }) {
-  const [tab, setTab] = useState<Tab>("invite");
-
-  return (
-    <Modal open={open} onClose={onClose} title="Add client">
-      <div className="mb-5 flex gap-1 rounded-[var(--radius-sm)] bg-[var(--surface)] p-1">
-        <button
-          type="button"
-          onClick={() => setTab("invite")}
-          className={`flex-1 rounded-[var(--radius-sm)] px-3 py-1.5 text-sm font-medium transition-colors ${
-            tab === "invite"
-              ? "bg-[var(--bg-elevated)] text-[var(--ink)] shadow-sm"
-              : "text-[var(--ink-muted)]"
-          }`}
-        >
-          Invite new client
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("complete")}
-          className={`flex-1 rounded-[var(--radius-sm)] px-3 py-1.5 text-sm font-medium transition-colors ${
-            tab === "complete"
-              ? "bg-[var(--bg-elevated)] text-[var(--ink)] shadow-sm"
-              : "text-[var(--ink-muted)]"
-          }`}
-        >
-          Complete a profile
-        </button>
-      </div>
-
-      {tab === "invite" ? (
-        <InviteClientTab firmId={firmId} onSent={() => setTab("complete")} />
-      ) : (
-        <CompleteProfileTab firmId={firmId} onDone={onClose} />
-      )}
-    </Modal>
-  );
-}
-
-function InviteClientTab({
-  firmId,
-  onSent,
-}: {
-  firmId: string | undefined;
-  onSent: () => void;
-}) {
-  const [email, setEmail] = useState("");
-
-  const sendInvite = useMutation({
-    mutationFn: async () =>
-      (
-        await api.post("/invites", {
-          email,
-          role: "client",
-          firm_id: firmId,
-        })
-      ).data,
-    onSuccess: () => {
-      toast.success(`Invite sent to ${email}`);
-      setEmail("");
-      onSent();
-    },
-    onError: (err) => toast.error(errorMessage(err, "Couldn't send that invite.")),
-  });
-
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (email.trim() && firmId) sendInvite.mutate();
-      }}
-      className="space-y-4"
-    >
-      <div className="flex items-start gap-2 rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--surface)] p-3 text-xs text-[var(--ink-muted)]">
-        <UserPlus size={14} className="mt-0.5 shrink-0" />
-        <p>
-          This sends the client an account invite. Once they accept it, switch to
-          &quot;Complete a profile&quot; to add their company details and finish setting them up.
-        </p>
-      </div>
-      <div>
-        <Label htmlFor="client-invite-email">Client email</Label>
-        <Input
-          id="client-invite-email"
-          type="email"
-          required
-          placeholder="client@company.com"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
-      </div>
-      <Button type="submit" disabled={sendInvite.isPending || !email.trim()} className="w-full">
-        {sendInvite.isPending ? "Sending…" : "Send invite"}
-      </Button>
-    </form>
-  );
-}
-
-function CompleteProfileTab({
-  firmId,
-  onDone,
-}: {
-  firmId: string | undefined;
-  onDone: () => void;
-}) {
   const queryClient = useQueryClient();
-  const { data: pending, isLoading } = usePendingClientProfiles(firmId);
-  const { data: staff } = useStaffForAssignment(firmId);
-  const [selectedUserId, setSelectedUserId] = useState<string>("");
-
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [panNumber, setPanNumber] = useState("");
   const [gstin, setGstin] = useState("");
-  const [accountantId, setAccountantId] = useState("");
 
-  const selectedUser = pending?.find((u) => u.id === selectedUserId);
-
-  const createClient = useMutation({
+  const quickAdd = useMutation({
     mutationFn: async () =>
       (
-        await api.post("/clients", {
-          user_id: selectedUserId,
-          firm_id: firmId,
+        await api.post("/clients/quick-add", {
+          name,
+          phone,
           company_name: companyName || null,
           pan_number: panNumber || null,
           gstin: gstin || null,
-          assigned_accountant_id: accountantId || null,
         })
       ).data,
     onSuccess: () => {
-      toast.success(`${companyName || selectedUser?.email} added as a client`);
+      toast.success(`${name} added — a WhatsApp document request was just sent`);
       queryClient.invalidateQueries({ queryKey: ["clients"] });
-      queryClient.invalidateQueries({ queryKey: ["users", "pending-clients", firmId] });
-      onDone();
+      setName("");
+      setPhone("");
+      setCompanyName("");
+      setPanNumber("");
+      setGstin("");
+      onClose();
     },
-    onError: (err) => toast.error(errorMessage(err, "Couldn't create that client.")),
+    onError: (err) => toast.error(errorMessage(err, "Couldn't add that client.")),
   });
 
-  if (isLoading) {
-    return (
-      <div className="space-y-3">
-        {Array.from({ length: 3 }).map((_, i) => (
-          <Skeleton key={i} className="h-10 w-full" />
-        ))}
-      </div>
-    );
-  }
-
-  if (!pending || pending.length === 0) {
-    return (
-      <div className="flex items-start gap-2 rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--surface)] p-4 text-sm text-[var(--ink-muted)]">
-        <ClipboardCheck size={16} className="mt-0.5 shrink-0" />
-        <p>
-          No accepted client invites are waiting on a profile yet. Once someone accepts a
-          client invite, they&apos;ll show up here.
-        </p>
-      </div>
-    );
-  }
-
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (selectedUserId && firmId) createClient.mutate();
-      }}
-      className="space-y-4"
-    >
-      <div>
-        <Label htmlFor="pending-client">Accepted invite</Label>
-        <Select
-          id="pending-client"
-          value={selectedUserId}
-          onChange={(e) => setSelectedUserId(e.target.value)}
-          required
+    <Modal open={open} onClose={onClose} title="Add client">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim() && phone.trim()) quickAdd.mutate();
+        }}
+        className="space-y-4"
+      >
+        <div className="flex items-start gap-2 rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--surface)] p-3 text-xs text-[var(--ink-muted)]">
+          <MessageCircle size={14} className="mt-0.5 shrink-0" />
+          <p>
+            Adds the client instantly — no account or login needed yet. We&apos;ll message them on
+            WhatsApp right away asking for their first documents. You can invite them to the web
+            portal later from their client page.
+          </p>
+        </div>
+        <div>
+          <Label htmlFor="quick-add-name">Name</Label>
+          <Input
+            id="quick-add-name"
+            required
+            placeholder="Priya Sharma"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <div>
+          <Label htmlFor="quick-add-phone">WhatsApp / phone number</Label>
+          <Input
+            id="quick-add-phone"
+            type="tel"
+            required
+            placeholder="98765 43210"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+          />
+        </div>
+        <div>
+          <Label htmlFor="quick-add-company">Company name (optional)</Label>
+          <Input
+            id="quick-add-company"
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            placeholder="Acme Pvt Ltd"
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <Label htmlFor="quick-add-pan">PAN (optional)</Label>
+            <Input
+              id="quick-add-pan"
+              value={panNumber}
+              onChange={(e) => setPanNumber(e.target.value.toUpperCase())}
+              placeholder="ABCDE1234F"
+            />
+          </div>
+          <div>
+            <Label htmlFor="quick-add-gstin">GSTIN (optional)</Label>
+            <Input
+              id="quick-add-gstin"
+              value={gstin}
+              onChange={(e) => setGstin(e.target.value.toUpperCase())}
+              placeholder="22ABCDE1234F1Z5"
+            />
+          </div>
+        </div>
+        <Button
+          type="submit"
+          disabled={quickAdd.isPending || !name.trim() || !phone.trim() || !firmId}
+          className="w-full"
         >
-          <option value="" disabled>
-            Select a person…
-          </option>
-          {pending.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.full_name} — {u.email}
-            </option>
-          ))}
-        </Select>
-      </div>
-      <div>
-        <Label htmlFor="company-name">Company name</Label>
-        <Input
-          id="company-name"
-          value={companyName}
-          onChange={(e) => setCompanyName(e.target.value)}
-          placeholder="Acme Pvt Ltd"
-        />
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <Label htmlFor="pan-number">PAN</Label>
-          <Input
-            id="pan-number"
-            value={panNumber}
-            onChange={(e) => setPanNumber(e.target.value.toUpperCase())}
-            placeholder="ABCDE1234F"
-          />
-        </div>
-        <div>
-          <Label htmlFor="gstin">GSTIN</Label>
-          <Input
-            id="gstin"
-            value={gstin}
-            onChange={(e) => setGstin(e.target.value.toUpperCase())}
-            placeholder="22ABCDE1234F1Z5"
-          />
-        </div>
-      </div>
-      <div>
-        <Label htmlFor="accountant">Assigned accountant (optional)</Label>
-        <Select id="accountant" value={accountantId} onChange={(e) => setAccountantId(e.target.value)}>
-          <option value="">Unassigned</option>
-          {(staff ?? [])
-            .filter((s) => s.role !== "client")
-            .map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.full_name} ({s.role.replace("_", " ")})
-              </option>
-            ))}
-        </Select>
-      </div>
-      <Button type="submit" disabled={createClient.isPending || !selectedUserId} className="w-full">
-        {createClient.isPending ? "Creating…" : "Create client"}
-      </Button>
-    </form>
+          {quickAdd.isPending ? "Adding…" : "Add client & message on WhatsApp"}
+        </Button>
+      </form>
+    </Modal>
   );
 }

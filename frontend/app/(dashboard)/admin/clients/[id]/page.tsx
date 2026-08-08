@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { AxiosError } from "axios";
-import { ArrowLeft, FileText, MessageCircle, Plus, FileSignature, Loader2 } from "lucide-react";
+import { ArrowLeft, FileText, MessageCircle, Plus, FileSignature, Loader2, Send, Phone } from "lucide-react";
 import { api } from "@/lib/api";
 import { useCurrentUser } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -76,6 +76,15 @@ export default function ClientOverviewPage({ params }: { params: Promise<{ id: s
     onError: (err) => toast.error(errorMessage(err, "Couldn't generate an engagement letter.")),
   });
 
+  const invitePortalAccess = useMutation({
+    mutationFn: async () => (await api.post(`/clients/${id}/invite-portal-access`)).data,
+    onSuccess: () => {
+      toast.success("Portal access invite sent over WhatsApp");
+      queryClient.invalidateQueries({ queryKey: ["clients", id] });
+    },
+    onError: (err) => toast.error(errorMessage(err, "Couldn't send that invite.")),
+  });
+
   return (
     <div className="space-y-6">
       <Link
@@ -96,6 +105,14 @@ export default function ClientOverviewPage({ params }: { params: Promise<{ id: s
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--ink-muted)]">
               <span>PAN: {client.pan_number ?? "—"}</span>
               <span>GSTIN: {client.gstin ?? "—"}</span>
+              {client.phone && (
+                <span className="inline-flex items-center gap-1">
+                  <Phone size={12} /> {client.phone}
+                </span>
+              )}
+              <Badge tone={client.has_portal_access ? "verified" : "pending"}>
+                {client.has_portal_access ? "Portal access" : "WhatsApp-only"}
+              </Badge>
               <Badge tone={client.assigned_accountant_id ? "verified" : "pending"}>
                 {client.assigned_accountant_id ? "Accountant assigned" : "Unassigned"}
               </Badge>
@@ -107,6 +124,20 @@ export default function ClientOverviewPage({ params }: { params: Promise<{ id: s
                 <MessageCircle size={16} /> Messages
               </Button>
             </Link>
+            {!client.has_portal_access && (
+              <Button
+                variant="outline"
+                onClick={() => invitePortalAccess.mutate()}
+                disabled={invitePortalAccess.isPending || !client.phone}
+              >
+                {invitePortalAccess.isPending ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Send size={16} />
+                )}
+                Invite to web portal
+              </Button>
+            )}
             <Button
               variant="outline"
               onClick={() => generateLetter.mutate()}
