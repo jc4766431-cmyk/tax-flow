@@ -3,16 +3,18 @@ import uuid
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_admin
+from app.api.deps import get_current_user, require_staff
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.user import StaffRead
 from app.services.user_service import UserService
 
-# firm_admin/super_admin only — same router-level require_admin gate as
-# invites.py, since staff listing is admin/team-management surface, not
-# something accountant/reviewer/client roles need.
-router = APIRouter(prefix="/users", tags=["users"], dependencies=[Depends(require_admin)])
+# Any staff role (super_admin/firm_admin/accountant/reviewer) may list staff —
+# this is a read-only lookup used to populate assignee dropdowns when any
+# staff member creates a filing or task, not just admins. Team-management
+# actions that actually change the roster (invite/remove) stay admin-gated
+# separately in invites.py — this router only ever reads.
+router = APIRouter(prefix="/users", tags=["users"], dependencies=[Depends(require_staff)])
 
 
 @router.get("", response_model=list[StaffRead])
