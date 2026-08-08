@@ -14,6 +14,15 @@ class FilingRequestCreate(BaseModel):
     assigned_accountant_id: uuid.UUID | None = None
 
 
+class FilingAssignAccountant(BaseModel):
+    """PATCH /filings/{id}/assign-accountant — sets/changes this specific
+    filing's accountant, which may legitimately differ from the client's
+    default (Client.assigned_accountant_id), e.g. a GST specialist handling
+    this filing. Pass null to unassign."""
+
+    assigned_accountant_id: uuid.UUID | None = None
+
+
 class FilingStageUpdate(BaseModel):
     stage: FilingStage
     notes: str | None = None

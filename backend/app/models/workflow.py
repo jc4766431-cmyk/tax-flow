@@ -61,6 +61,8 @@ class NotificationType(str, enum.Enum):
     APPROVAL_REQUEST = "approval_request"
     FILING_COMPLETED = "filing_completed"
     NEW_MESSAGE = "new_message"
+    TASK_ASSIGNED = "task_assigned"
+    INVOICE_SENT = "invoice_sent"
 
 
 class Notification(Base, UUIDMixin, TimestampMixin):

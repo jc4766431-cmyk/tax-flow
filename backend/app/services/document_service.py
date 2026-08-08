@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import assert_firm_scoped
 from app.models.client import Client
 from app.models.document import ChecklistItem, Document, DocumentCategory, DocumentStatus
-from app.models.filing import FilingRequest
+from app.models.filing import FilingRequest, FilingStage, FilingStageEvent
 from app.models.user import User, UserRole
 from app.models.workflow import AuditLog, Notification, NotificationType
 from app.repositories.document_repository import DocumentRepository
@@ -112,6 +112,19 @@ class DocumentService:
 
         if payload.filing_request_id:
             self._sync_checklist_on_upload(payload.filing_request_id, payload.category, document)
+            self._maybe_advance_stage(
+                filing_request_id=payload.filing_request_id,
+                from_stage=FilingStage.REQUESTED,
+                to_stage=FilingStage.DOCUMENTS_UPLOADED,
+                required_statuses={
+                    DocumentStatus.UPLOADED,
+                    DocumentStatus.UNDER_REVIEW,
+                    DocumentStatus.APPROVED,
+                    DocumentStatus.REJECTED,
+                },
+                current_user=current_user,
+                notes="Auto-advanced: all checklist documents uploaded",
+            )
 
         if background_tasks is not None:
             background_tasks.add_task(process_document_ocr, str(document.id))
@@ -131,12 +144,58 @@ class DocumentService:
     def _sync_checklist_on_upload(
         self, filing_request_id: uuid.UUID, category: DocumentCategory, document: Document
     ) -> None:
+        # Ensure the checklist rows exist even if nobody has viewed
+        # GET .../checklist yet (seed_checklist is idempotent) — otherwise a
+        # client who uploads before staff ever opens the checklist tab would
+        # silently never sync, and auto-stage-advancement below would never
+        # see a complete checklist to advance on.
+        self.documents.seed_checklist(filing_request_id)
         item = self.documents.get_checklist_item(filing_request_id, category)
         if item is None:
             return  # not part of the fixed checklist (e.g. INVOICE/OTHER) — nothing to sync
         item.status = DocumentStatus.UPLOADED
         item.fulfilling_document_id = document.id
         self.db.add(item)
+        self.db.commit()
+
+    # --- Filing stage auto-transitions ----------------------------------
+    # Nothing else moves FilingRequest.stage automatically today — the only
+    # other path is a staff member calling PATCH /filings/{id}/stage
+    # directly. These two hooks close that gap for the two transitions that
+    # are clearly derivable from checklist state; approval_required -> filed
+    # -> completed stay manual/staff-driven.
+
+    def _maybe_advance_stage(
+        self,
+        *,
+        filing_request_id: uuid.UUID,
+        from_stage: FilingStage,
+        to_stage: FilingStage,
+        required_statuses: set[DocumentStatus],
+        current_user: User,
+        notes: str,
+    ) -> None:
+        filing = self.db.get(FilingRequest, filing_request_id)
+        if filing is None or filing.stage != from_stage:
+            # Only advance from the exact expected stage — never regress a
+            # filing that's already further along (e.g. a client re-upload
+            # after rejection shouldn't knock it back from under_review to
+            # documents_uploaded).
+            return
+
+        items = self.documents.list_checklist_items(filing_request_id)
+        required_items = [item for item in items if item.required]
+        if not required_items or any(item.status not in required_statuses for item in required_items):
+            return
+
+        filing.stage = to_stage
+        self.db.add(filing)
+        self.db.add(FilingStageEvent(
+            filing_request_id=filing.id,
+            stage=to_stage,
+            responsible_user_id=current_user.id,
+            notes=notes,
+        ))
         self.db.commit()
 
     # --- Listing / retrieval --------------------------------------------
@@ -210,6 +269,21 @@ class DocumentService:
             if item and item.fulfilling_document_id == document.id:
                 item.status = payload.status
                 self.db.add(item)
+                if payload.status == DocumentStatus.APPROVED:
+                    # Product-intent call (see HANDOFF.md gap #2): once every
+                    # required checklist item is approved, under_review is
+                    # treated as system-driven ("all docs are in, ready for
+                    # staff review") rather than a separate manual "staff
+                    # started working on it" signal. Revisit if that
+                    # distinction turns out to matter.
+                    self._maybe_advance_stage(
+                        filing_request_id=document.filing_request_id,
+                        from_stage=FilingStage.DOCUMENTS_UPLOADED,
+                        to_stage=FilingStage.UNDER_REVIEW,
+                        required_statuses={DocumentStatus.APPROVED},
+                        current_user=current_user,
+                        notes="Auto-advanced: all checklist documents approved",
+                    )
 
         self.db.add(AuditLog(
             actor_user_id=current_user.id,

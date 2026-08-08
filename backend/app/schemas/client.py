@@ -12,6 +12,16 @@ class ClientCreate(BaseModel):
     assigned_accountant_id: uuid.UUID | None = None
 
 
+class ClientAssignAccountant(BaseModel):
+    """POST/PATCH /clients/{id}/assign-accountant — sets or clears this
+    client's *default* accountant directly, independent of any filing.
+    Distinct from FilingRequest.assigned_accountant_id (a specific filing's
+    accountant, which may legitimately differ, e.g. a GST specialist on one
+    filing). Pass null to unassign."""
+
+    assigned_accountant_id: uuid.UUID | None = None
+
+
 class ClientQuickAdd(BaseModel):
     """POST /clients/quick-add — phone-first onboarding, additive to
     ClientCreate above (which stays exactly as-is, for the existing

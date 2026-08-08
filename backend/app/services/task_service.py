@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import assert_firm_scoped
 from app.models.client import Client
 from app.models.user import User, UserRole
-from app.models.workflow import Task, TaskStatus
+from app.models.workflow import Notification, NotificationType, Task, TaskStatus
 from app.repositories.task_repository import TaskRepository
 from app.schemas.task import KanbanBoard, TaskCreate, TaskStatusUpdate, TaskUpdate
 
@@ -96,11 +96,30 @@ class TaskService:
                 detail="Cannot assign a task to a client-role user",
             )
 
+    def _notify_assignment(self, task: Task, current_user: User) -> None:
+        """Notifies the assignee a task landed on their board, mirroring
+        every other "something needs your attention" action in the app
+        (new message, document uploaded/reviewed, deadline reminders). Skips
+        if the assignee is the same user performing the action (no need to
+        notify yourself), or if there's no assignee at all."""
+        if task.assigned_to_id is None or task.assigned_to_id == current_user.id:
+            return
+        self.db.add(Notification(
+            user_id=task.assigned_to_id,
+            type=NotificationType.TASK_ASSIGNED,
+            title="Task assigned to you",
+            body=task.title,
+            link_url="/admin/board",
+        ))
+        self.db.commit()
+
     def create_task(self, payload: TaskCreate, current_user: User) -> Task:
         firm_id = self._resolve_firm_id(current_user, payload.client_id)
         self._assert_assignee_in_firm(firm_id, payload.assigned_to_id)
         task = Task(**payload.model_dump(), firm_id=firm_id)
-        return self.tasks.create(task)
+        task = self.tasks.create(task)
+        self._notify_assignment(task, current_user)
+        return task
 
     def get_task(self, task_id: uuid.UUID, current_user: User) -> Task:
         task = self._get_or_404(task_id)
@@ -134,6 +153,7 @@ class TaskService:
     def update_task(self, task_id: uuid.UUID, payload: TaskUpdate, current_user: User) -> Task:
         task = self._get_or_404(task_id)
         self._assert_can_access(current_user, task)
+        previous_assigned_to_id = task.assigned_to_id
         data = payload.model_dump(exclude_unset=True)
         # A task's firm is fixed at creation; if the edit reassigns it to a
         # different client, that client must still be in the task's own firm
@@ -150,7 +170,10 @@ class TaskService:
             self._assert_assignee_in_firm(task.firm_id, data["assigned_to_id"])
         for field, value in data.items():
             setattr(task, field, value)
-        return self.tasks.update(task)
+        task = self.tasks.update(task)
+        if "assigned_to_id" in data and task.assigned_to_id != previous_assigned_to_id:
+            self._notify_assignment(task, current_user)
+        return task
 
     def update_status(self, task_id: uuid.UUID, payload: TaskStatusUpdate, current_user: User) -> Task:
         """Drag-and-drop column move on the Kanban board."""

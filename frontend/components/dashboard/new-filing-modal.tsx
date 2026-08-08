@@ -63,6 +63,10 @@ export function NewFilingModal({
     onSuccess: () => {
       toast.success("Filing created");
       queryClient.invalidateQueries({ queryKey: ["filings"] });
+      // Assigning an accountant here may backfill the client's default
+      // accountant (see backend filings.py) — refetch so the "Accountant
+      // assigned / Unassigned" badge on the client page reflects it.
+      queryClient.invalidateQueries({ queryKey: ["clients", clientId] });
       setPeriodLabel("");
       setDueDate("");
       setAccountantId("");

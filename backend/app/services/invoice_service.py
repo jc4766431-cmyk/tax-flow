@@ -24,8 +24,10 @@ from app.api.deps import assert_firm_scoped
 from app.models.client import Client
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.user import User
+from app.models.workflow import Notification, NotificationType
 from app.repositories.invoice_repository import InvoiceRepository
 from app.schemas.invoice import InvoiceCreate, InvoiceMarkPaid, InvoiceUpdate
+from app.services.notification_channels import EmailSender, WhatsAppBusinessAPISender
 from app.services.razorpay_service import RazorpayNotConfiguredError, razorpay_service
 
 logger = logging.getLogger(__name__)
@@ -123,12 +125,43 @@ class InvoiceService:
 
         return self.invoices.save(invoice)
 
+    def _notify_client_invoice_sent(self, invoice: Invoice) -> None:
+        """Actually notifies the client an invoice is ready — matching the
+        email/WhatsApp channel patterns invite_portal_access and
+        create_shadow_client_invite already use elsewhere in this codebase,
+        rather than "send" only flipping a status flag with nobody told."""
+        client = self.db.get(Client, invoice.client_id)
+        if client is None:
+            return
+
+        due = f" (due {invoice.due_date.isoformat()})" if invoice.due_date else ""
+        body = (
+            f"Hi, invoice {invoice.invoice_number} for INR {invoice.total_amount} "
+            f"has been sent to you{due}. Please check your TaxFlow portal for details."
+        )
+
+        if client.phone:
+            WhatsAppBusinessAPISender().send_text(client.phone, body)
+        if client.user and client.user.email and not client.user.email.endswith("@taxflow.internal"):
+            EmailSender().send_text(client.user.email, body)
+
+        self.db.add(Notification(
+            user_id=client.user_id,
+            type=NotificationType.INVOICE_SENT,
+            title="Invoice sent",
+            body=f"Invoice {invoice.invoice_number} for INR {invoice.total_amount} was sent to you.",
+            link_url=f"/invoices/{invoice.id}",
+        ))
+        self.db.commit()
+
     def send_invoice(self, invoice_id: uuid.UUID, current_user: User) -> Invoice:
         invoice = self.get_invoice(invoice_id, current_user)
         if invoice.status != InvoiceStatus.DRAFT:
             raise HTTPException(status_code=400, detail="Only draft invoices can be sent")
         invoice.status = InvoiceStatus.SENT
-        return self.invoices.save(invoice)
+        invoice = self.invoices.save(invoice)
+        self._notify_client_invoice_sent(invoice)
+        return invoice
 
     def mark_paid(
         self, invoice_id: uuid.UUID, payload: InvoiceMarkPaid, current_user: User

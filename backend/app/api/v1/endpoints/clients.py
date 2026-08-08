@@ -11,7 +11,13 @@ from app.core.security import hash_password
 from app.db.session import get_db
 from app.models.client import Client
 from app.models.user import User, UserRole
-from app.schemas.client import ClientCreate, ClientQuickAdd, ClientRead, PaginatedClients
+from app.schemas.client import (
+    ClientAssignAccountant,
+    ClientCreate,
+    ClientQuickAdd,
+    ClientRead,
+    PaginatedClients,
+)
 from app.schemas.document import DocumentRead
 from app.schemas.invite import InviteRead
 from app.services.engagement_letter_service import generate_engagement_letter
@@ -202,6 +208,49 @@ def get_client(
     if current_user.role != UserRole.CLIENT:
         assert_firm_scoped(current_user, client.firm_id)
 
+    return client
+
+
+@router.patch("/{client_id}/assign-accountant", response_model=ClientRead)
+def assign_accountant(
+    client_id: uuid.UUID,
+    payload: ClientAssignAccountant,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_staff),
+):
+    """Sets/changes a client's *default* accountant directly, independent of
+    any filing — staff-only, firm-scoped same as other client mutations.
+
+    This is deliberately a separate, explicit action from filing-level
+    accountant assignment: creating/updating a filing with an
+    assigned_accountant_id only backfills this field when it's still null
+    (see filings.py), so it never silently overrides a default set here.
+    Pass assigned_accountant_id: null to unassign.
+    """
+    client = db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    assert_firm_scoped(current_user, client.firm_id)
+
+    if payload.assigned_accountant_id is not None:
+        accountant = db.get(User, payload.assigned_accountant_id)
+        if not accountant:
+            raise HTTPException(status_code=404, detail="Accountant not found")
+        if accountant.role == UserRole.CLIENT:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot assign a client-role user as an accountant",
+            )
+        if accountant.role != UserRole.SUPER_ADMIN and accountant.firm_id != client.firm_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Accountant must belong to the client's firm",
+            )
+
+    client.assigned_accountant_id = payload.assigned_accountant_id
+    db.add(client)
+    db.commit()
+    db.refresh(client)
     return client
 
 

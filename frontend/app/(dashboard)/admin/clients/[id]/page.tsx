@@ -15,7 +15,22 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/dashboard/empty-state";
 import { FilingTimeline } from "@/components/dashboard/filing-timeline";
 import { NewFilingModal } from "@/components/dashboard/new-filing-modal";
-import { FILING_TYPE_LABELS, type Client, type DocumentItem, type FilingRequest } from "@/lib/types";
+import { Select } from "@/components/ui/select";
+import {
+  FILING_TYPE_LABELS,
+  type Client,
+  type DocumentItem,
+  type FilingRequest,
+  type StaffMember,
+} from "@/lib/types";
+
+function useStaffForAssignment(firmId: string | undefined) {
+  return useQuery<StaffMember[]>({
+    queryKey: ["users", firmId],
+    queryFn: async () => (await api.get("/users", { params: { firm_id: firmId } })).data,
+    enabled: !!firmId,
+  });
+}
 
 function errorMessage(err: unknown, fallback: string) {
   if (err instanceof AxiosError) {
@@ -48,6 +63,7 @@ export default function ClientOverviewPage({ params }: { params: Promise<{ id: s
   const queryClient = useQueryClient();
   const { data: client, isLoading, isError, error } = useClient(id);
   const { data: filings, isLoading: filingsLoading } = useClientFilings(id);
+  const { data: staff } = useStaffForAssignment(currentUser?.firm_id ?? undefined);
   const [newFilingOpen, setNewFilingOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
 
@@ -85,6 +101,22 @@ export default function ClientOverviewPage({ params }: { params: Promise<{ id: s
     onError: (err) => toast.error(errorMessage(err, "Couldn't send that invite.")),
   });
 
+  const assignAccountant = useMutation({
+    mutationFn: async (accountantId: string) =>
+      (
+        await api.patch(`/clients/${id}/assign-accountant`, {
+          assigned_accountant_id: accountantId || null,
+        })
+      ).data,
+    onSuccess: (updated: Client) => {
+      queryClient.setQueryData(["clients", id], updated);
+      toast.success(
+        updated.assigned_accountant_id ? "Default accountant updated" : "Accountant unassigned"
+      );
+    },
+    onError: (err) => toast.error(errorMessage(err, "Couldn't update the assigned accountant.")),
+  });
+
   return (
     <div className="space-y-6">
       <Link
@@ -116,6 +148,30 @@ export default function ClientOverviewPage({ params }: { params: Promise<{ id: s
               <Badge tone={client.assigned_accountant_id ? "verified" : "pending"}>
                 {client.assigned_accountant_id ? "Accountant assigned" : "Unassigned"}
               </Badge>
+            </div>
+            <div className="mt-3 flex items-center gap-2">
+              <label htmlFor="default-accountant" className="text-sm text-[var(--ink-muted)]">
+                Default accountant
+              </label>
+              <Select
+                id="default-accountant"
+                className="w-56"
+                value={client.assigned_accountant_id ?? ""}
+                disabled={assignAccountant.isPending}
+                onChange={(e) => assignAccountant.mutate(e.target.value)}
+              >
+                <option value="">Unassigned</option>
+                {(staff ?? [])
+                  .filter((s) => s.role !== "client")
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.full_name} ({s.role.replace("_", " ")})
+                    </option>
+                  ))}
+              </Select>
+              {assignAccountant.isPending && (
+                <Loader2 size={14} className="animate-spin text-[var(--ink-muted)]" />
+              )}
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
