@@ -1,7 +1,8 @@
 """
 Business logic for user/staff management. list_staff mirrors
 InviteService.list_invites' firm-scoping: super_admin may target any firm,
-firm_admin only their own, via the shared assert_firm_scoped helper.
+all other staff roles (firm_admin/accountant/reviewer) only their own,
+via the shared assert_firm_scoped helper.
 """
 import uuid
 
